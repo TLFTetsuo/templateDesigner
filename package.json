@@ -1,0 +1,32 @@
+{
+  "name": "template-designer-app",
+  "version": "1.0.0",
+  "description": "A web application for designing templates for image generation, outputting YAML files for electronic shelf labels.",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint ."
+  },
+  "keywords": [
+    "template",
+    "yaml",
+    "image generator",
+    "electronic shelf labels"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "yaml": "^1.10.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.3.1",
+    "@types/react": "19.1.12",
+    "eslint": "latest",
+    "typescript": "latest"
+  }
+}
