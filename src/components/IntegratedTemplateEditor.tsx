@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import styles from '../styles/EslDesigner.module.css';
 
 // Canvas item types from AdvancedCanvasEditor
@@ -8,6 +8,7 @@ interface BaseItem {
   x: number;
   y: number;
   color: string;
+  zIndex?: number;
 }
 
 interface RectItem extends BaseItem {
@@ -25,6 +26,7 @@ interface TextItem extends BaseItem {
   type: "text";
   text: string;
   fontSize: number;
+  fontFamily?: string;
 }
 
 interface LineItem extends BaseItem {
@@ -65,13 +67,58 @@ const propertiesSections: SidebarSection[] = [
   { id: 'properties', name: 'Properties', icon: '⚙️' }
 ];
 
+// Available fonts for text elements
+const availableFonts = [
+  { label: 'System Default', value: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', eslFont: 'FreeMonoRegular.ttf' },
+  { label: 'Arial', value: 'Arial, sans-serif', eslFont: 'Arial.ttf' },
+  { label: 'Helvetica', value: 'Helvetica, Arial, sans-serif', eslFont: 'Helvetica.ttf' },
+  { label: 'Times New Roman', value: '"Times New Roman", Times, serif', eslFont: 'TimesNewRoman.ttf' },
+  { label: 'Georgia', value: 'Georgia, serif', eslFont: 'Georgia.ttf' },
+  { label: 'Verdana', value: 'Verdana, Geneva, sans-serif', eslFont: 'Verdana.ttf' },
+  { label: 'Courier New', value: '"Courier New", Courier, monospace', eslFont: 'CourierNew.ttf' },
+  { label: 'Monaco', value: 'Monaco, "Lucida Console", monospace', eslFont: 'Monaco.ttf' },
+  { label: 'Impact', value: 'Impact, "Arial Black", sans-serif', eslFont: 'Impact.ttf' },
+  { label: 'Comic Sans MS', value: '"Comic Sans MS", cursive', eslFont: 'ComicSansMS.ttf' },
+  { label: 'Trebuchet MS', value: '"Trebuchet MS", Arial, sans-serif', eslFont: 'TrebuchetMS.ttf' },
+  { label: 'Palatino', value: 'Palatino, "Palatino Linotype", serif', eslFont: 'Palatino.ttf' }
+];
+
+// Function to get ESL font filename from web font family
+const getEslFontFromWebFont = (webFontFamily: string): string => {
+  const font = availableFonts.find(f => f.value === webFontFamily);
+  return font ? font.eslFont : 'FreeMonoRegular.ttf'; // Default fallback
+};
+
 const initialCanvasItems: CanvasItem[] = [
-  { id: 1, type: "text", x: 100, y: 50, text: "Product Title", color: "#000000", fontSize: 18 },
-  { id: 2, type: "text", x: 100, y: 80, text: "Description", color: "#000000", fontSize: 12 },
-  { id: 3, type: "text", x: 100, y: 120, text: "$0.00", color: "#ff0000", fontSize: 16 }
+  { id: 1, type: "text", x: 10, y: 35, text: "Product", color: "#000000", fontSize: 25, fontFamily: availableFonts[0].value, zIndex: 0 },
+  { id: 2, type: "text", x: 130, y: 112, text: "$0.00", color: "#000000", fontSize: 40, fontFamily: availableFonts[0].value, zIndex: 1 }
 ];
 
 const TemplateEditor: React.FC = () => {
+
+    // Helper function to estimate text width for different font families
+    const estimateTextWidth = useCallback((text: string, fontSize: number, fontFamily?: string): number => {
+        const family = fontFamily || availableFonts[0].value;
+        
+        // Different font families have different character width ratios
+        let widthRatio = 0.6; // Default for monospace
+        
+        if (family.includes('Arial') || family.includes('Helvetica') || family.includes('sans-serif')) {
+            widthRatio = 0.55; // Sans-serif fonts are typically narrower
+        } else if (family.includes('Times') || family.includes('Georgia') || family.includes('serif')) {
+            widthRatio = 0.5; // Serif fonts are typically narrower
+        } else if (family.includes('Courier') || family.includes('Monaco') || family.includes('monospace')) {
+            widthRatio = 0.6; // Monospace fonts
+        } else if (family.includes('Impact')) {
+            widthRatio = 0.45; // Impact is condensed
+        } else if (family.includes('Comic Sans')) {
+            widthRatio = 0.58; // Comic Sans is wider
+        } else if (family.includes('Verdana')) {
+            widthRatio = 0.6; // Verdana is wider
+        }
+        
+        return text.length * (fontSize * widthRatio);
+    }, []);
 
     // Move getItemBounds inside component to fix Fast Refresh issues
     const getItemBounds = useCallback((item: CanvasItem) => {
@@ -82,7 +129,10 @@ const TemplateEditor: React.FC = () => {
             return { x: item.x - item.radius, y: item.y - item.radius, width: item.radius * 2, height: item.radius * 2 };
         }
         if (item.type === "text") {
-            return { x: item.x, y: item.y - item.fontSize, width: item.text.length * item.fontSize * 0.6, height: item.fontSize };
+            // Use font-aware width calculation
+            const estimatedWidth = estimateTextWidth(item.text, item.fontSize, (item as TextItem).fontFamily);
+            const estimatedHeight = item.fontSize * 0.8;
+            return { x: item.x, y: item.y - estimatedHeight, width: estimatedWidth, height: estimatedHeight };
         }
         if (item.type === "line") {
             const minX = Math.min(item.x, item.x2);
@@ -98,7 +148,7 @@ const TemplateEditor: React.FC = () => {
             return { x: item.x, y: item.y, width: item.size, height: item.size };
         }
         return {};
-    }, []);
+    }, [estimateTextWidth]);
 
     // Helper function for preset button styling
     const getPresetButtonStyle = useCallback((isActive: boolean) => ({
@@ -188,6 +238,61 @@ const TemplateEditor: React.FC = () => {
     const [canvasWidth, setCanvasWidth] = useState<number>(250);
     const [canvasHeight, setCanvasHeight] = useState<number>(122);
 
+    // Helper function to constrain element position within canvas bounds
+    const constrainToCanvas = useCallback((item: CanvasItem, newX: number, newY: number, newWidth?: number, newHeight?: number): { x: number, y: number, width?: number, height?: number } => {
+        const bounds = getItemBounds(item);
+        const elementWidth = newWidth !== undefined ? newWidth : bounds.width || 0;
+        const elementHeight = newHeight !== undefined ? newHeight : bounds.height || 0;
+        
+        let constrainedX = newX;
+        let constrainedY = newY;
+        let constrainedWidth = elementWidth;
+        let constrainedHeight = elementHeight;
+        
+        if (item.type === 'text') {
+            // For text: constrain so the RIGHT EDGE of text doesn't exceed canvas boundary
+            const textWidth = estimateTextWidth(item.text, item.fontSize, (item as TextItem).fontFamily);
+            const textHeight = item.fontSize * 0.8;
+            
+            // Constrain X: only left boundary - allow text to extend beyond right edge
+            constrainedX = Math.max(0, newX);
+            
+            // Constrain Y: text baseline must be at least textHeight from top, and within canvas height
+            constrainedY = Math.max(textHeight, Math.min(canvasHeight, newY));
+            
+        } else if (item.type === 'circle') {
+            // Circles: x,y is center, constrain by radius
+            const radius = item.radius;
+            constrainedX = Math.max(radius, Math.min(canvasWidth - radius, newX));
+            constrainedY = Math.max(radius, Math.min(canvasHeight - radius, newY));
+            
+        } else if (item.type === 'line') {
+            // Lines: constrain both endpoints
+            constrainedX = Math.max(0, Math.min(canvasWidth, newX));
+            constrainedY = Math.max(0, Math.min(canvasHeight, newY));
+            
+        } else {
+            // Rectangles, barcodes, QR codes: x,y is top-left corner
+            constrainedX = Math.max(0, Math.min(canvasWidth - elementWidth, newX));
+            constrainedY = Math.max(0, Math.min(canvasHeight - elementHeight, newY));
+            
+            // Constrain dimensions if provided
+            if (newWidth !== undefined) {
+                constrainedWidth = Math.max(1, Math.min(canvasWidth - constrainedX, newWidth));
+            }
+            if (newHeight !== undefined) {
+                constrainedHeight = Math.max(1, Math.min(canvasHeight - constrainedY, newHeight));
+            }
+        }
+        
+        return {
+            x: constrainedX,
+            y: constrainedY,
+            ...(newWidth !== undefined && { width: constrainedWidth }),
+            ...(newHeight !== undefined && { height: constrainedHeight })
+        };
+    }, [getItemBounds, canvasWidth, canvasHeight, estimateTextWidth]);
+
     // Zoom state
     const [zoomLevel, setZoomLevel] = useState<number>(1);
     const zoomLevels = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
@@ -195,6 +300,22 @@ const TemplateEditor: React.FC = () => {
     // Font size input state (for delayed updates)
     const [fontSizeInput, setFontSizeInput] = useState<string>('');
     const [isFontSizeEditing, setIsFontSizeEditing] = useState<boolean>(false);
+
+    // Watch for font size input changes and update canvas immediately
+    useEffect(() => {
+        if (isFontSizeEditing && selectedId && fontSizeInput) {
+            const newFontSize = parseInt(fontSizeInput);
+            if (!isNaN(newFontSize) && newFontSize >= 8 && newFontSize <= 200) {
+                setCanvasItems(items =>
+                    items.map(item =>
+                        item.id === selectedId && item.type === 'text' 
+                            ? { ...item, fontSize: newFontSize } as TextItem
+                            : item
+                    )
+                );
+            }
+        }
+    }, [fontSizeInput, selectedId, isFontSizeEditing]);
 
     // Delete selected item function
     const deleteSelectedItem = useCallback(() => {
@@ -274,8 +395,35 @@ const TemplateEditor: React.FC = () => {
         } else if (e.key === 'Escape') {
             setIsFontSizeEditing(false);
             setFontSizeInput('');
+        } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault(); // Prevent default number input behavior
+            
+            if (!selectedId) return;
+            
+            const currentItem = canvasItems.find(item => item.id === selectedId);
+            if (!currentItem || currentItem.type !== 'text') return;
+            
+            const textItem = currentItem as TextItem;
+            const currentFontSize = textItem.fontSize || 16;
+            const increment = e.shiftKey ? 5 : 1; // Hold Shift for larger increments
+            const newFontSize = e.key === 'ArrowUp' 
+                ? Math.min(200, currentFontSize + increment)
+                : Math.max(8, currentFontSize - increment);
+            
+            // Update the canvas item immediately for real-time feedback
+            setCanvasItems(items =>
+                items.map(item =>
+                    item.id === selectedId && item.type === 'text' 
+                        ? { ...item, fontSize: newFontSize } as TextItem
+                        : item
+                )
+            );
+            
+            // Update the input field value to reflect the change
+            setFontSizeInput(newFontSize.toString());
+            setIsFontSizeEditing(true);
         }
-    }, [handleFontSizeInputSubmit]);
+    }, [handleFontSizeInputSubmit, selectedId, canvasItems]);
 
     // Reset font size editing state when selected element changes
     React.useEffect(() => {
@@ -307,11 +455,13 @@ const TemplateEditor: React.FC = () => {
                                 onChange={(e) => {
                                     const newX = parseInt(e.target.value) || 0;
                                     setCanvasItems(items =>
-                                        items.map(item =>
-                                            item.id === selectedId 
-                                                ? { ...item, x: Math.max(0, Math.min(canvasWidth - 10, newX)) }
-                                                : item
-                                        )
+                                        items.map(item => {
+                                            if (item.id === selectedId) {
+                                                const constrained = constrainToCanvas(item, newX, item.y);
+                                                return { ...item, x: constrained.x };
+                                            }
+                                            return item;
+                                        })
                                     );
                                 }}
                                 style={{ 
@@ -332,11 +482,13 @@ const TemplateEditor: React.FC = () => {
                                 onChange={(e) => {
                                     const newY = parseInt(e.target.value) || 0;
                                     setCanvasItems(items =>
-                                        items.map(item =>
-                                            item.id === selectedId 
-                                                ? { ...item, y: Math.max(0, Math.min(canvasHeight - 10, newY)) }
-                                                : item
-                                        )
+                                        items.map(item => {
+                                            if (item.id === selectedId) {
+                                                const constrained = constrainToCanvas(item, item.x, newY);
+                                                return { ...item, y: constrained.y };
+                                            }
+                                            return item;
+                                        })
                                     );
                                 }}
                                 style={{ 
@@ -348,9 +500,6 @@ const TemplateEditor: React.FC = () => {
                                 }}
                             />
                         </div>
-                    </div>
-                    <div style={{ fontSize: '10px', color: '#888', marginTop: '3px' }}>
-                        Canvas: {canvasWidth} × {canvasHeight} px
                     </div>
                 </div>
 
@@ -409,6 +558,40 @@ const TemplateEditor: React.FC = () => {
                             />
                         </div>
 
+                        {/* Font Family Control */}
+                        <div style={{ marginBottom: '15px' }}>
+                            <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', fontWeight: 'bold', color: '#333' }}>
+                                Font:
+                            </label>
+                            <select 
+                                value={(selectedItem as any).fontFamily || availableFonts[0].value}
+                                onChange={(e) => {
+                                    setCanvasItems(items =>
+                                        items.map(item =>
+                                            item.id === selectedId && item.type === 'text'
+                                                ? { ...item, fontFamily: e.target.value }
+                                                : item
+                                        )
+                                    );
+                                }}
+                                style={{ 
+                                    width: '100%', 
+                                    padding: '6px 8px', 
+                                    fontSize: '12px',
+                                    border: '1px solid #ddd',
+                                    borderRadius: '3px',
+                                    backgroundColor: 'white',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                {availableFonts.map((font, index) => (
+                                    <option key={index} value={font.value} style={{ fontFamily: font.value }}>
+                                        {font.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+
                         {/* Font Size Control */}
                         <div style={{ marginBottom: '15px' }}>
                             <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', fontWeight: 'bold', color: '#333' }}>
@@ -421,7 +604,11 @@ const TemplateEditor: React.FC = () => {
                                 max="200"
                                 value={isFontSizeEditing ? fontSizeInput : ((selectedItem as any).fontSize || 16)}
                                 onFocus={() => handleFontSizeInputFocus((selectedItem as any).fontSize || 16)}
-                                onChange={(e) => handleFontSizeInputChange(e.target.value)}
+                                onChange={(e) => {
+                                    const newValue = e.target.value;
+                                    handleFontSizeInputChange(newValue);
+                                    setIsFontSizeEditing(true); // Ensure editing state is set for useEffect
+                                }}
                                 onBlur={handleFontSizeInputBlur}
                                 onKeyDown={handleFontSizeKeyDown}
                                 style={{ 
@@ -433,7 +620,7 @@ const TemplateEditor: React.FC = () => {
                                 }}
                             />
                             <div style={{ fontSize: '10px', color: '#888', marginTop: '3px' }}>
-                                Range: 8px - 200px {isFontSizeEditing && '• Press Enter to apply'}
+                                Range: 8px - 200px • Use ↑↓ arrows or spinner buttons for real-time adjustment {isFontSizeEditing && '• Press Enter to apply'}
                             </div>
                         </div>
                     </>
@@ -454,11 +641,13 @@ const TemplateEditor: React.FC = () => {
                                 onChange={(e) => {
                                     const newWidth = parseInt(e.target.value) || 50;
                                     setCanvasItems(items =>
-                                        items.map(item =>
-                                            item.id === selectedId && item.type === 'rect'
-                                                ? { ...item, width: Math.max(1, newWidth) }
-                                                : item
-                                        )
+                                        items.map(item => {
+                                            if (item.id === selectedId && item.type === 'rect') {
+                                                const constrained = constrainToCanvas(item, item.x, item.y, newWidth, item.height);
+                                                return { ...item, width: constrained.width || newWidth };
+                                            }
+                                            return item;
+                                        })
                                     );
                                 }}
                                 style={{ 
@@ -484,11 +673,13 @@ const TemplateEditor: React.FC = () => {
                                 onChange={(e) => {
                                     const newHeight = parseInt(e.target.value) || 50;
                                     setCanvasItems(items =>
-                                        items.map(item =>
-                                            item.id === selectedId && item.type === 'rect'
-                                                ? { ...item, height: Math.max(1, newHeight) }
-                                                : item
-                                        )
+                                        items.map(item => {
+                                            if (item.id === selectedId && item.type === 'rect') {
+                                                const constrained = constrainToCanvas(item, item.x, item.y, item.width, newHeight);
+                                                return { ...item, height: constrained.height || newHeight };
+                                            }
+                                            return item;
+                                        })
                                     );
                                 }}
                                 style={{ 
@@ -516,11 +707,16 @@ const TemplateEditor: React.FC = () => {
                             onChange={(e) => {
                                 const newRadius = parseInt(e.target.value) || 25;
                                 setCanvasItems(items =>
-                                    items.map(item =>
-                                        item.id === selectedId && item.type === 'circle'
-                                            ? { ...item, radius: Math.max(1, newRadius) }
-                                            : item
-                                    )
+                                    items.map(item => {
+                                        if (item.id === selectedId && item.type === 'circle') {
+                                            const constrained = constrainToCanvas(item, item.x, item.y);
+                                            // For circles, we need to check if the new radius fits within bounds
+                                            const maxRadius = Math.min(item.x, item.y, canvasWidth - item.x, canvasHeight - item.y);
+                                            const finalRadius = Math.max(1, Math.min(maxRadius, newRadius));
+                                            return { ...item, radius: finalRadius };
+                                        }
+                                        return item;
+                                    })
                                 );
                             }}
                             style={{ 
@@ -644,11 +840,13 @@ const TemplateEditor: React.FC = () => {
                                         onChange={(e) => {
                                             const newWidth = parseInt(e.target.value) || 100;
                                             setCanvasItems(items =>
-                                                items.map(item =>
-                                                    item.id === selectedId && item.type === 'barcode'
-                                                        ? { ...item, width: Math.max(1, newWidth) }
-                                                        : item
-                                                )
+                                                items.map(item => {
+                                                    if (item.id === selectedId && item.type === 'barcode') {
+                                                        const constrained = constrainToCanvas(item, item.x, item.y, newWidth, item.height);
+                                                        return { ...item, width: constrained.width || newWidth };
+                                                    }
+                                                    return item;
+                                                })
                                             );
                                         }}
                                         style={{ 
@@ -670,11 +868,13 @@ const TemplateEditor: React.FC = () => {
                                         onChange={(e) => {
                                             const newHeight = parseInt(e.target.value) || 30;
                                             setCanvasItems(items =>
-                                                items.map(item =>
-                                                    item.id === selectedId && item.type === 'barcode'
-                                                        ? { ...item, height: Math.max(1, newHeight) }
-                                                        : item
-                                                )
+                                                items.map(item => {
+                                                    if (item.id === selectedId && item.type === 'barcode') {
+                                                        const constrained = constrainToCanvas(item, item.x, item.y, item.width, newHeight);
+                                                        return { ...item, height: constrained.height || newHeight };
+                                                    }
+                                                    return item;
+                                                })
                                             );
                                         }}
                                         style={{ 
@@ -734,11 +934,13 @@ const TemplateEditor: React.FC = () => {
                                 onChange={(e) => {
                                     const newSize = parseInt(e.target.value) || 50;
                                     setCanvasItems(items =>
-                                        items.map(item =>
-                                            item.id === selectedId && item.type === 'qrcode'
-                                                ? { ...item, size: Math.max(10, newSize) }
-                                                : item
-                                        )
+                                        items.map(item => {
+                                            if (item.id === selectedId && item.type === 'qrcode') {
+                                                const constrained = constrainToCanvas(item, item.x, item.y, newSize, newSize);
+                                                return { ...item, size: constrained.width || newSize };
+                                            }
+                                            return item;
+                                        })
                                     );
                                 }}
                                 style={{ 
@@ -957,6 +1159,101 @@ const TemplateEditor: React.FC = () => {
                                 <div style={{ marginBottom: '10px', padding: '8px', backgroundColor: '#f5f5f5', borderRadius: '4px' }}>
                                     <strong>Type:</strong> {selectedItem.type.charAt(0).toUpperCase() + selectedItem.type.slice(1)}
                                 </div>
+                                
+                                {/* Layer Controls */}
+                                <div style={{ marginBottom: '15px' }}>
+                                    <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', fontWeight: 'bold', color: '#333' }}>
+                                        Layer:
+                                    </label>
+                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                        {(() => {
+                                            const currentZIndex = selectedItem.zIndex || 0;
+                                            const maxZIndex = Math.max(...canvasItems.map(item => item.zIndex || 0));
+                                            const minZIndex = Math.min(...canvasItems.map(item => item.zIndex || 0));
+                                            const canMoveUp = currentZIndex < maxZIndex;
+                                            const canMoveDown = currentZIndex > minZIndex;
+                                            
+                                            return (
+                                                <>
+                                                    <button
+                                                        onClick={() => moveElementUp(selectedItem.id)}
+                                                        disabled={!canMoveUp}
+                                                        style={{
+                                                            flex: 1,
+                                                            padding: '8px 12px',
+                                                            fontSize: '12px',
+                                                            border: `1px solid ${canMoveUp ? '#007bff' : '#ccc'}`,
+                                                            borderRadius: '4px',
+                                                            backgroundColor: canMoveUp ? '#f8f9fa' : '#f5f5f5',
+                                                            cursor: canMoveUp ? 'pointer' : 'not-allowed',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            justifyContent: 'center',
+                                                            gap: '4px',
+                                                            color: canMoveUp ? '#007bff' : '#999',
+                                                            fontWeight: '500',
+                                                            transition: 'all 0.2s ease',
+                                                            opacity: canMoveUp ? 1 : 0.6
+                                                        }}
+                                                        onMouseEnter={(e) => {
+                                                            if (canMoveUp) {
+                                                                e.currentTarget.style.backgroundColor = '#007bff';
+                                                                e.currentTarget.style.color = 'white';
+                                                            }
+                                                        }}
+                                                        onMouseLeave={(e) => {
+                                                            if (canMoveUp) {
+                                                                e.currentTarget.style.backgroundColor = '#f8f9fa';
+                                                                e.currentTarget.style.color = '#007bff';
+                                                            }
+                                                        }}
+                                                    >
+                                                        ↑ Move up
+                                                    </button>
+                                                    <button
+                                                        onClick={() => moveElementDown(selectedItem.id)}
+                                                        disabled={!canMoveDown}
+                                                        style={{
+                                                            flex: 1,
+                                                            padding: '8px 12px',
+                                                            fontSize: '12px',
+                                                            border: `1px solid ${canMoveDown ? '#007bff' : '#ccc'}`,
+                                                            borderRadius: '4px',
+                                                            backgroundColor: canMoveDown ? '#f8f9fa' : '#f5f5f5',
+                                                            cursor: canMoveDown ? 'pointer' : 'not-allowed',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            justifyContent: 'center',
+                                                            gap: '4px',
+                                                            color: canMoveDown ? '#007bff' : '#999',
+                                                            fontWeight: '500',
+                                                            transition: 'all 0.2s ease',
+                                                            opacity: canMoveDown ? 1 : 0.6
+                                                        }}
+                                                        onMouseEnter={(e) => {
+                                                            if (canMoveDown) {
+                                                                e.currentTarget.style.backgroundColor = '#007bff';
+                                                                e.currentTarget.style.color = 'white';
+                                                            }
+                                                        }}
+                                                        onMouseLeave={(e) => {
+                                                            if (canMoveDown) {
+                                                                e.currentTarget.style.backgroundColor = '#f8f9fa';
+                                                                e.currentTarget.style.color = '#007bff';
+                                                            }
+                                                        }}
+                                                    >
+                                                        ↓ Move down
+                                                    </button>
+                                                </>
+                                            );
+                                        })()}
+                                    </div>
+                                    <div style={{ fontSize: '10px', color: '#888', marginTop: '3px', textAlign: 'center' }}>
+                                        Layer {(selectedItem.zIndex || 0) + 1} of {canvasItems.length}
+                                    </div>
+                                </div>
+                                
                                 {renderSelectedElementControls()}
                             </div>
                         ) : (
@@ -995,6 +1292,9 @@ const TemplateEditor: React.FC = () => {
     const handleMouseDown = useCallback((e: React.MouseEvent, id: number) => {
         if (resizing) return; // Don't start dragging if we're resizing
         
+        // Prevent event from bubbling to canvas background handler
+        e.stopPropagation();
+        
         setSelectedId(id);
         setDragging(true);
         const item = canvasItems.find(i => i.id === id);
@@ -1015,6 +1315,26 @@ const TemplateEditor: React.FC = () => {
         });
     }, [resizing, canvasItems, zoomLevel]);
 
+    // Canvas background click handler to deselect elements
+    const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
+        // Only deselect if clicking on the canvas background (not on an element)
+        const target = e.target as Element;
+        
+        // Check if we clicked on the canvas background (svg element or background rect)
+        // We identify canvas background clicks by checking if the target is the SVG or the background rect
+        const isSvgElement = target.tagName === 'svg';
+        const isBackgroundRect = target.tagName === 'rect' && target.classList.contains('canvas-background');
+        const isGenericBackgroundRect = target.tagName === 'rect' && target.getAttribute('width') === '100%' && target.getAttribute('height') === '100%';
+        
+        if (isSvgElement || isBackgroundRect || isGenericBackgroundRect) {
+            // Clicked on canvas background, deselect current selection
+            setSelectedId(null);
+            // Also stop any dragging
+            setDragging(false);
+        }
+        // If clicked on an element, handleMouseDown will be called instead and will handle selection
+    }, []);
+
     const handleMouseMove = useCallback((e: MouseEvent) => {
         if (dragging && selectedId !== null) {
             const rect = document.querySelector('.template-canvas')?.getBoundingClientRect();
@@ -1027,22 +1347,32 @@ const TemplateEditor: React.FC = () => {
                         const newY = Math.round(((e.clientY - rect.top) / zoomLevel) - dragOffset.y);
                         
                         if (item.type === 'line') {
-                            // For lines, move both start and end points by the same delta
+                            // For lines, constrain both endpoints within canvas bounds
                             const deltaX = newX - item.x;
                             const deltaY = newY - item.y;
+                            const newX2 = item.x2 + deltaX;
+                            const newY2 = item.y2 + deltaY;
+                            
+                            // Constrain both endpoints
+                            const constrainedX = Math.max(0, Math.min(canvasWidth, newX));
+                            const constrainedY = Math.max(0, Math.min(canvasHeight, newY));
+                            const constrainedX2 = Math.max(0, Math.min(canvasWidth, newX2));
+                            const constrainedY2 = Math.max(0, Math.min(canvasHeight, newY2));
+                            
                             return {
                                 ...item,
-                                x: newX,
-                                y: newY,
-                                x2: item.x2 + deltaX,
-                                y2: item.y2 + deltaY
+                                x: constrainedX,
+                                y: constrainedY,
+                                x2: constrainedX2,
+                                y2: constrainedY2
                             };
                         } else {
-                            // For other elements, just update x and y
+                            // For other elements, use the constraint function
+                            const constrained = constrainToCanvas(item, newX, newY);
                             return {
                                 ...item,
-                                x: newX,
-                                y: newY
+                                x: constrained.x,
+                                y: constrained.y
                             };
                         }
                     }
@@ -1050,7 +1380,7 @@ const TemplateEditor: React.FC = () => {
                 })
             );
         }
-    }, [dragging, selectedId, dragOffset, zoomLevel]);
+    }, [dragging, selectedId, dragOffset, zoomLevel, constrainToCanvas, canvasWidth, canvasHeight]);
 
     const handleMouseUp = useCallback(() => {
         setDragging(false);
@@ -1174,12 +1504,15 @@ const TemplateEditor: React.FC = () => {
                         newWidth = Math.max(10, newWidth);
                         newHeight = Math.max(10, newHeight);
                         
+                        // Apply canvas boundary constraints
+                        const constrained = constrainToCanvas(item, newX, newY, newWidth, newHeight);
+                        
                         return {
                             ...item,
-                            x: Math.round(newX),
-                            y: Math.round(newY),
-                            width: Math.round(newWidth),
-                            height: Math.round(newHeight)
+                            x: Math.round(constrained.x),
+                            y: Math.round(constrained.y),
+                            width: Math.round(constrained.width || newWidth),
+                            height: Math.round(constrained.height || newHeight)
                         };
                     } else if (item.type === 'text') {
                         // For text, adjust fontSize based on resize handle direction
@@ -1253,12 +1586,18 @@ const TemplateEditor: React.FC = () => {
                                 break;
                         }
                         
+                        // Apply canvas boundary constraints to line endpoints
+                        const constrainedX = Math.max(0, Math.min(canvasWidth, newX));
+                        const constrainedY = Math.max(0, Math.min(canvasHeight, newY));
+                        const constrainedX2 = Math.max(0, Math.min(canvasWidth, newX2));
+                        const constrainedY2 = Math.max(0, Math.min(canvasHeight, newY2));
+                        
                         return {
                             ...item,
-                            x: Math.round(newX),
-                            y: Math.round(newY),
-                            x2: Math.round(newX2),
-                            y2: Math.round(newY2)
+                            x: Math.round(constrainedX),
+                            y: Math.round(constrainedY),
+                            x2: Math.round(constrainedX2),
+                            y2: Math.round(constrainedY2)
                         };
                     }
                     
@@ -1266,7 +1605,7 @@ const TemplateEditor: React.FC = () => {
                 })
             );
         }
-    }, [resizing, selectedId, resizeHandle, resizeStart, zoomLevel]);
+    }, [resizing, selectedId, resizeHandle, resizeStart, zoomLevel, constrainToCanvas, canvasWidth, canvasHeight]);
 
     // Add mouse event listeners
     React.useEffect(() => {
@@ -1312,6 +1651,13 @@ const TemplateEditor: React.FC = () => {
                 resetZoom();
                 return;
             }
+        }
+
+        // Handle escape key to deselect elements
+        if (e.key === 'Escape') {
+            setSelectedId(null);
+            setDragging(false);
+            return;
         }
 
         if (!selectedId) return;
@@ -1385,18 +1731,18 @@ const TemplateEditor: React.FC = () => {
             ];
         } else if (item.type === 'text') {
             // For text, find the sweet spot that properly surrounds the text
-            const estimatedWidth = item.text.length * (item.fontSize * 0.42); // Increased from 0.35 to properly surround text
+            const estimatedWidth = estimateTextWidth(item.text, item.fontSize, (item as TextItem).fontFamily);
             const estimatedHeight = item.fontSize * 0.8; // Reduced from 1.0 to fit closer
             
             // Make handles slightly larger and proportional to text height
             handleSize = Math.max(4, Math.min(item.fontSize * 0.25, 10));
             
-            // Position handles just outside the text boundaries
+            // Position handles exactly at the text boundaries (no padding)
             // Text baseline is at item.y, so text extends upward
             const textTop = item.y - estimatedHeight;
-            const textBottom = item.y + (item.fontSize * 0.1); // Small padding below baseline
-            const textLeft = item.x - (handleSize * 0.2); // Small padding to left
-            const textRight = item.x + estimatedWidth + (handleSize * 0.2); // Small padding to right
+            const textBottom = item.y; // Baseline position
+            const textLeft = item.x; // Exact left edge of text
+            const textRight = item.x + estimatedWidth; // Exact right edge of text
             
             handles = [
                 { id: 'nw', x: textLeft - handleSize/2, y: textTop - handleSize/2, cursor: 'nw-resize' },
@@ -1428,37 +1774,87 @@ const TemplateEditor: React.FC = () => {
                 onMouseDown={(e) => handleResizeMouseDown(e, handle.id)}
             />
         ));
-    }, [handleResizeMouseDown]);
+    }, [handleResizeMouseDown, estimateTextWidth]);
 
     const addElement = useCallback((type: string) => {
         setCanvasItems(prevItems => {
             const newId = prevItems.length > 0 ? Math.max(...prevItems.map(item => item.id)) + 1 : 1;
+            const newZIndex = prevItems.length > 0 ? Math.max(...prevItems.map(item => item.zIndex || 0)) + 1 : 0;
             let newItem: CanvasItem;
             
             switch (type) {
                 case 'rect':
-                    newItem = { id: newId, type: 'rect', x: 50, y: 50, width: 100, height: 60, color: '#000000' };
+                    newItem = { id: newId, type: 'rect', x: 50, y: 50, width: 100, height: 60, color: '#000000', zIndex: newZIndex };
                     break;
                 case 'circle':
-                    newItem = { id: newId, type: 'circle', x: 100, y: 100, radius: 30, color: '#ff0000' };
+                    newItem = { id: newId, type: 'circle', x: 100, y: 100, radius: 30, color: '#ff0000', zIndex: newZIndex };
                     break;
                 case 'text':
-                    newItem = { id: newId, type: 'text', x: 50, y: 50, text: 'New Text', fontSize: 14, color: '#000000' };
+                    newItem = { id: newId, type: 'text', x: 50, y: 50, text: 'New Text', fontSize: 14, color: '#000000', fontFamily: availableFonts[0].value, zIndex: newZIndex };
                     break;
                 case 'line':
-                    newItem = { id: newId, type: 'line', x: 50, y: 50, x2: 150, y2: 50, strokeWidth: 2, color: '#000000' };
+                    newItem = { id: newId, type: 'line', x: 50, y: 50, x2: 150, y2: 50, strokeWidth: 2, color: '#000000', zIndex: newZIndex };
                     break;
                 case 'barcode':
-                    newItem = { id: newId, type: 'barcode', x: 50, y: 50, width: 100, height: 30, data: '123456789', color: '#000000' };
+                    newItem = { id: newId, type: 'barcode', x: 50, y: 50, width: 100, height: 30, data: '123456789', color: '#000000', zIndex: newZIndex };
                     break;
                 case 'qrcode':
-                    newItem = { id: newId, type: 'qrcode', x: 50, y: 50, size: 50, data: 'https://example.com', color: '#000000' };
+                    newItem = { id: newId, type: 'qrcode', x: 50, y: 50, size: 50, data: 'https://example.com', color: '#000000', zIndex: newZIndex };
                     break;
                 default:
                     return prevItems;
             }
             
             return [...prevItems, newItem];
+        });
+    }, []);
+
+    // Layer management functions
+    const moveElementUp = useCallback((elementId: number) => {
+        setCanvasItems(prevItems => {
+            const currentItem = prevItems.find(item => item.id === elementId);
+            if (!currentItem) return prevItems;
+            
+            const currentZIndex = currentItem.zIndex || 0;
+            const itemsAbove = prevItems.filter(item => (item.zIndex || 0) > currentZIndex);
+            
+            if (itemsAbove.length === 0) return prevItems; // Already at top
+            
+            // Find the lowest zIndex above current item
+            const nextZIndex = Math.min(...itemsAbove.map(item => item.zIndex || 0));
+            
+            return prevItems.map(item => {
+                if (item.id === elementId) {
+                    return { ...item, zIndex: nextZIndex };
+                } else if (item.zIndex === nextZIndex) {
+                    return { ...item, zIndex: currentZIndex };
+                }
+                return item;
+            });
+        });
+    }, []);
+
+    const moveElementDown = useCallback((elementId: number) => {
+        setCanvasItems(prevItems => {
+            const currentItem = prevItems.find(item => item.id === elementId);
+            if (!currentItem) return prevItems;
+            
+            const currentZIndex = currentItem.zIndex || 0;
+            const itemsBelow = prevItems.filter(item => (item.zIndex || 0) < currentZIndex);
+            
+            if (itemsBelow.length === 0) return prevItems; // Already at bottom
+            
+            // Find the highest zIndex below current item
+            const nextZIndex = Math.max(...itemsBelow.map(item => item.zIndex || 0));
+            
+            return prevItems.map(item => {
+                if (item.id === elementId) {
+                    return { ...item, zIndex: nextZIndex };
+                } else if (item.zIndex === nextZIndex) {
+                    return { ...item, zIndex: currentZIndex };
+                }
+                return item;
+            });
         });
     }, []);
 
@@ -1489,36 +1885,38 @@ const TemplateEditor: React.FC = () => {
             }
         };
 
-        // Create a font for each unique font size used in text elements
-        // Each text element gets its own font assignment using FreeMonoRegular.ttf
-        const usedFontSizes = new Set<number>();
+        // Create a font for each unique font family + size combination used in text elements
+        const usedFontCombinations = new Set<string>();
         const textElements = canvasItems.filter(item => item.type === 'text') as TextItem[];
         
-        // Collect all unique font sizes from user-defined text elements
+        // Collect all unique font family + size combinations from user-defined text elements
         textElements.forEach(item => {
-            usedFontSizes.add(item.fontSize);
+            const fontFamily = item.fontFamily || availableFonts[0].value;
+            const combinationKey = `${fontFamily}|${item.fontSize}`;
+            usedFontCombinations.add(combinationKey);
         });
 
-        // Always include a default font size (16) for template variables if not already present
-        if (!usedFontSizes.has(16)) {
-            usedFontSizes.add(16);
+        // Always include a default font combination for template variables if not already present
+        const defaultCombination = `${availableFonts[0].value}|16`;
+        if (!usedFontCombinations.has(defaultCombination)) {
+            usedFontCombinations.add(defaultCombination);
         }
 
-        // Generate fonts array with FreeMonoRegular.ttf for each unique size
-        // This ensures each text element uses the exact font size set by the user
+        // Generate fonts array with appropriate ESL font files for each combination
         const fonts: any[] = [];
-        const fontSizeToIndex = new Map<number, number>();
+        const fontCombinationToIndex = new Map<string, number>();
         
-        Array.from(usedFontSizes).sort((a, b) => a - b).forEach((fontSize, index) => {
+        Array.from(usedFontCombinations).sort().forEach((combination, index) => {
+            const [fontFamily, fontSize] = combination.split('|');
             fonts.push({
-                type: 'FreeMonoRegular.ttf',
-                size: fontSize
+                type: getEslFontFromWebFont(fontFamily),
+                size: parseInt(fontSize)
             });
-            fontSizeToIndex.set(fontSize, index);
+            fontCombinationToIndex.set(combination, index);
         });
 
-        // Get the index for default font size (16) for template variables
-        const defaultFontIndex = fontSizeToIndex.get(16) || 0;
+        // Get the index for default font combination for template variables
+        const defaultFontIndex = fontCombinationToIndex.get(defaultCombination) || 0;
 
         // Generate the YAML structure
         const yamlData: any = {
@@ -1537,6 +1935,8 @@ const TemplateEditor: React.FC = () => {
                 if (bracketMatch) {
                     // Text is in format [variableName] - create a var element
                     const varName = bracketMatch[1];
+                    const fontFamily = item.fontFamily || availableFonts[0].value;
+                    const combinationKey = `${fontFamily}|${item.fontSize}`;
                     const element = {
                         type: 'var',
                         fill: colorToFill(item.color),
@@ -1544,11 +1944,13 @@ const TemplateEditor: React.FC = () => {
                         x: item.x,
                         y: item.y,
                         anchor: 'ls',
-                        font: fontSizeToIndex.get(item.fontSize) || 0
+                        font: fontCombinationToIndex.get(combinationKey) || 0
                     };
                     yamlData.el.push(element);
                 } else {
                     // Regular text element
+                    const fontFamily = item.fontFamily || availableFonts[0].value;
+                    const combinationKey = `${fontFamily}|${item.fontSize}`;
                     const element = {
                         type: 'text',
                         fill: colorToFill(item.color),
@@ -1556,7 +1958,7 @@ const TemplateEditor: React.FC = () => {
                         x: item.x,
                         y: item.y,
                         anchor: 'ls', // left-start anchor as default
-                        font: fontSizeToIndex.get(item.fontSize) || 0
+                        font: fontCombinationToIndex.get(combinationKey) || 0
                     };
                     yamlData.el.push(element);
                 }
@@ -1602,7 +2004,7 @@ const TemplateEditor: React.FC = () => {
         
         // Disable anti-aliasing for pixel-perfect rendering
         ctx.imageSmoothingEnabled = false;
-        ctx.textBaseline = 'top';
+        ctx.textBaseline = 'alphabetic'; // Match SVG text baseline behavior
         
         // Fill background with white
         ctx.fillStyle = '#ffffff';
@@ -1646,10 +2048,21 @@ const TemplateEditor: React.FC = () => {
                 );
             } else if (item.type === 'text') {
                 ctx.fillStyle = exactColor;
-                ctx.font = `${Math.round(item.fontSize)}px monospace`;
+                
+                // Use the same font family as in the SVG display
+                const fontFamily = (item as TextItem).fontFamily || availableFonts[0].value;
+                ctx.font = `${Math.round(item.fontSize)}px ${fontFamily}`;
+                
+                // Measure actual text width for positioning
+                const textMetrics = ctx.measureText(item.text);
+                const textWidth = textMetrics.width;
+                
+                // Only constrain left boundary - allow text to extend beyond right edge
+                const constrainedX = Math.max(0, item.x);
+                
                 ctx.fillText(
                     item.text,
-                    Math.round(item.x),
+                    Math.round(constrainedX),
                     Math.round(item.y)
                 );
             } else if (item.type === 'line') {
@@ -1774,6 +2187,14 @@ const TemplateEditor: React.FC = () => {
         }, 'image/jpeg', 1.0); // Maximum quality
     }, [canvasItems, canvasWidth, canvasHeight]);
 
+    // Clear canvas function
+    const clearCanvas = useCallback(() => {
+        if (window.confirm('Are you sure you want to clear all elements from the canvas? This action cannot be undone.')) {
+            setCanvasItems([]);
+            setSelectedId(null);
+        }
+    }, []);
+
     // Helper function to convert object to YAML string
     const convertToYAMLString = (data: any): string => {
         let yaml = '';
@@ -1868,9 +2289,9 @@ const TemplateEditor: React.FC = () => {
                             <span className={styles.canvasType}>ESL Template Designer</span>
                         </div>
                         <div className={styles.canvasControls}>
-                            <button className={styles.btnSecondary}>Preview</button>
+                            <button className={styles.btnSecondary} onClick={clearCanvas}>Clear Canvas</button>
                             <button className={styles.btnPrimary} onClick={exportToYAML}>Export YAML</button>
-                            <button className={styles.btnPrimary} onClick={exportToJPG}>Export JPG</button>
+                            <button className={styles.btnPrimary} onClick={exportToJPG}>Preview (download JPG)</button>
                         </div>
                     </div>
                     
@@ -1920,15 +2341,6 @@ const TemplateEditor: React.FC = () => {
                                     }}
                                 />
                             </label>
-                        </div>
-                        <div style={{ 
-                            fontSize: '12px', 
-                            color: '#666',
-                            backgroundColor: '#f8f9fa',
-                            padding: '4px 8px',
-                            borderRadius: '4px'
-                        }}>
-                            Size: {canvasWidth} × {canvasHeight} px
                         </div>
 
                         {/* Zoom Controls */}
@@ -2032,11 +2444,14 @@ const TemplateEditor: React.FC = () => {
                                         backgroundColor: 'white'
                                     }}
                                     tabIndex={0}
+                                    onMouseDown={handleCanvasMouseDown}
                                 >
-                                    <rect width="100%" height="100%" fill="white"/>
+                                    <rect className="canvas-background" width="100%" height="100%" fill="white"/>
                                     
                                     {/* Canvas Items */}
-                                    {canvasItems.map(item => {
+                                    {canvasItems
+                                        .sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0))
+                                        .map(item => {
                                         if (item.type === "rect") {
                                             return (
                                                 <rect
@@ -2076,7 +2491,11 @@ const TemplateEditor: React.FC = () => {
                                                     y={item.y}
                                                     fill={item.color}
                                                     fontSize={item.fontSize}
-                                                    style={{ cursor: "grab", userSelect: "none" }}
+                                                    style={{ 
+                                                        cursor: "grab", 
+                                                        userSelect: "none",
+                                                        fontFamily: (item as TextItem).fontFamily || availableFonts[0].value
+                                                    }}
                                                     onMouseDown={(e) => handleMouseDown(e, item.id)}
                                                 >
                                                     {item.text}

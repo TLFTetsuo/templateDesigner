@@ -8,6 +8,7 @@ interface BaseItem {
   x: number;
   y: number;
   color: string;
+  zIndex?: number;
 }
 
 interface RectItem extends BaseItem {
@@ -25,14 +26,15 @@ interface TextItem extends BaseItem {
   type: "text";
   text: string;
   fontSize: number;
+  fontFamily?: string;
 }
 
 type CanvasItem = RectItem | CircleItem | TextItem;
 
 const initialCanvasItems: CanvasItem[] = [
-  { id: 1, type: "text", x: 100, y: 50, text: "Product Title", color: "#000", fontSize: 18 },
-  { id: 2, type: "text", x: 100, y: 80, text: "Description", color: "#666", fontSize: 12 },
-  { id: 3, type: "text", x: 100, y: 120, text: "$0.00", color: "#e74c3c", fontSize: 16 }
+  { id: 1, type: "text", x: 100, y: 50, text: "Product Title", color: "#000", fontSize: 18, fontFamily: 'Arial, sans-serif' },
+  { id: 2, type: "text", x: 100, y: 80, text: "Description", color: "#666", fontSize: 12, fontFamily: 'Arial, sans-serif' },
+  { id: 3, type: "text", x: 100, y: 120, text: "$0.00", color: "#e74c3c", fontSize: 16, fontFamily: 'Arial, sans-serif' }
 ];
 
 function getItemBounds(item: CanvasItem) {
@@ -48,7 +50,6 @@ function getItemBounds(item: CanvasItem) {
   return {};
 }
 
-const TemplateEditor: React.FC<TemplateEditorProps> = ({ template, onTemplateChange }) => {
 const TemplateEditor: React.FC<TemplateEditorProps> = ({ template, onTemplateChange }) => {
     // Defensive check to ensure template is defined
     if (!template) {
@@ -153,7 +154,7 @@ const TemplateEditor: React.FC<TemplateEditorProps> = ({ template, onTemplateCha
                 newItem = { id: newId, type: 'circle', x: 100, y: 100, radius: 30, color: '#e74c3c' };
                 break;
             case 'text':
-                newItem = { id: newId, type: 'text', x: 50, y: 50, text: 'New Text', fontSize: 14, color: '#000' };
+                newItem = { id: newId, type: 'text', x: 50, y: 50, text: 'New Text', fontSize: 14, color: '#000', fontFamily: 'Arial, sans-serif' };
                 break;
             default:
                 return;

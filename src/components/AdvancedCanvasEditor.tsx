@@ -7,6 +7,7 @@ interface BaseItem {
   x: number;
   y: number;
   color: string;
+  zIndex?: number;
 }
 
 interface RectItem extends BaseItem {
@@ -24,6 +25,7 @@ interface TextItem extends BaseItem {
   type: "text";
   text: string;
   fontSize: number;
+  fontFamily?: string;
 }
 
 type CanvasItem = RectItem | CircleItem | TextItem;
@@ -31,7 +33,7 @@ type CanvasItem = RectItem | CircleItem | TextItem;
 const initialItems: CanvasItem[] = [
   { id: 1, type: "rect", x: 50, y: 50, width: 120, height: 70, color: "#FF6347" },
   { id: 2, type: "circle", x: 240, y: 130, radius: 50, color: "#4682B4" },
-  { id: 3, type: "text", x: 140, y: 220, text: "Edit me!", color: "#222", fontSize: 32 }
+  { id: 3, type: "text", x: 140, y: 220, text: "Edit me!", color: "#222", fontSize: 32, fontFamily: 'Arial, sans-serif' }
 ];
 
 function getItemBounds(item: CanvasItem) {
