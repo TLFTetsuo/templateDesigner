@@ -28,9 +28,6 @@ interface TextItem extends BaseItem {
   fontSize: number;
   fontFamily?: string;
   anchor?: 'lt' | 'mt' | 'rt' | 'ls' | 'ms' | 'rs';
-  bold?: boolean;
-  italic?: boolean;
-  underline?: boolean;
 }
 
 interface LineItem extends BaseItem {
@@ -102,13 +99,6 @@ const TemplateEditor: React.FC = () => {
     const estimateTextWidth = useCallback((text: string, fontSize: number, fontFamily?: string): number => {
         const family = fontFamily || availableFonts[0].value;
         
-        // Ensure text is a string
-        const safeText = String(text || '');
-        
-        // Handle multi-line text by finding the longest line
-        const lines = safeText.split('\n');
-        let maxWidth = 0;
-        
         // Different font families have different character width ratios
         let widthRatio = 0.6; // Default for monospace
         
@@ -126,15 +116,7 @@ const TemplateEditor: React.FC = () => {
             widthRatio = 0.6; // Verdana is wider
         }
         
-        // Calculate width for each line and return the maximum
-        lines.forEach(line => {
-            const lineWidth = line.length * (fontSize * widthRatio);
-            if (lineWidth > maxWidth) {
-                maxWidth = lineWidth;
-            }
-        });
-        
-        return maxWidth;
+        return text.length * (fontSize * widthRatio);
     }, []);
 
     // Move getItemBounds inside component to fix Fast Refresh issues
@@ -147,14 +129,9 @@ const TemplateEditor: React.FC = () => {
         }
         if (item.type === "text") {
             // Use font-aware width calculation
-            // item.y is the top edge, text baseline is at item.y + fontSize
-            const text = String(item.text || '');
-            const estimatedWidth = estimateTextWidth(text, item.fontSize, (item as TextItem).fontFamily);
-            // Calculate height based on number of lines
-            const lines = text.split('\n');
-            const lineHeight = item.fontSize * 1.2;
-            const estimatedHeight = lines.length * lineHeight;
-            return { x: item.x, y: item.y, width: estimatedWidth, height: estimatedHeight };
+            const estimatedWidth = estimateTextWidth(item.text, item.fontSize, (item as TextItem).fontFamily);
+            const estimatedHeight = item.fontSize * 0.8;
+            return { x: item.x, y: item.y - estimatedHeight, width: estimatedWidth, height: estimatedHeight };
         }
         if (item.type === "line") {
             const minX = Math.min(item.x, item.x2);
@@ -289,8 +266,8 @@ const TemplateEditor: React.FC = () => {
             // Constrain X: only left boundary - allow text to extend beyond right edge
             constrainedX = Math.max(0, newX);
             
-            // Constrain Y: allow minimum of 0 (top edge) and within canvas height
-            constrainedY = Math.max(0, Math.min(canvasHeight, newY));
+            // Constrain Y: text baseline must be at least textHeight from top, and within canvas height
+            constrainedY = Math.max(textHeight, Math.min(canvasHeight, newY));
             
         } else if (item.type === 'circle') {
             // Circles: x,y is center, constrain by radius
@@ -570,19 +547,16 @@ const TemplateEditor: React.FC = () => {
                                 step="1"
                                 value={selectedItem.x}
                                 onChange={(e) => {
-                                    const value = e.target.value;
-                                    const newX = value === '' ? 0 : parseInt(value);
-                                    if (!isNaN(newX)) {
-                                        setCanvasItems(items =>
-                                            items.map(item => {
-                                                if (selectedIds.includes(item.id)) {
-                                                    const constrained = constrainToCanvas(item, newX, item.y);
-                                                    return { ...item, x: constrained.x };
-                                                }
-                                                return item;
-                                            })
-                                        );
-                                    }
+                                    const newX = parseInt(e.target.value) || 0;
+                                    setCanvasItems(items =>
+                                        items.map(item => {
+                                            if (selectedIds.includes(item.id)) {
+                                                const constrained = constrainToCanvas(item, newX, item.y);
+                                                return { ...item, x: constrained.x };
+                                            }
+                                            return item;
+                                        })
+                                    );
                                 }}
                                 style={{ 
                                     width: '100%', 
@@ -600,19 +574,16 @@ const TemplateEditor: React.FC = () => {
                                 step="1"
                                 value={selectedItem.y}
                                 onChange={(e) => {
-                                    const value = e.target.value;
-                                    const newY = value === '' ? 0 : parseInt(value);
-                                    if (!isNaN(newY)) {
-                                        setCanvasItems(items =>
-                                            items.map(item => {
-                                                if (selectedIds.includes(item.id)) {
-                                                    const constrained = constrainToCanvas(item, item.x, newY);
-                                                    return { ...item, y: constrained.y };
-                                                }
-                                                return item;
-                                            })
-                                        );
-                                    }
+                                    const newY = parseInt(e.target.value) || 0;
+                                    setCanvasItems(items =>
+                                        items.map(item => {
+                                            if (selectedIds.includes(item.id)) {
+                                                const constrained = constrainToCanvas(item, item.x, newY);
+                                                return { ...item, y: constrained.y };
+                                            }
+                                            return item;
+                                        })
+                                    );
                                 }}
                                 style={{ 
                                     width: '100%', 
@@ -659,7 +630,8 @@ const TemplateEditor: React.FC = () => {
                             <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', fontWeight: 'bold', color: '#333' }}>
                                 Text Content:
                             </label>
-                            <textarea 
+                            <input 
+                                type="text" 
                                 value={(selectedItem as any).text || ''}
                                 onChange={(e) => {
                                     setCanvasItems(items =>
@@ -670,15 +642,12 @@ const TemplateEditor: React.FC = () => {
                                         )
                                     );
                                 }}
-                                rows={3}
                                 style={{ 
                                     width: '100%', 
                                     padding: '6px 8px', 
                                     fontSize: '12px',
                                     border: '1px solid #ddd',
-                                    borderRadius: '3px',
-                                    fontFamily: 'inherit',
-                                    resize: 'vertical'
+                                    borderRadius: '3px'
                                 }}
                             />
                         </div>
@@ -715,127 +684,6 @@ const TemplateEditor: React.FC = () => {
                                     </option>
                                 ))}
                             </select>
-                        </div>
-
-                        {/* Text Formatting Controls */}
-                        <div style={{ marginBottom: '15px' }}>
-                            <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', fontWeight: 'bold', color: '#333' }}>
-                                Formatting:
-                            </label>
-                            <div style={{ display: 'flex', gap: '8px' }}>
-                                {/* Bold Button */}
-                                <button
-                                    onClick={() => {
-                                        setCanvasItems(items =>
-                                            items.map(item =>
-                                                selectedIds.includes(item.id) && item.type === 'text'
-                                                    ? { ...item, bold: !(item as TextItem).bold }
-                                                    : item
-                                            )
-                                        );
-                                    }}
-                                    style={{
-                                        flex: 1,
-                                        padding: '8px 12px',
-                                        fontSize: '14px',
-                                        fontWeight: 'bold',
-                                        border: '2px solid #ddd',
-                                        borderRadius: '4px',
-                                        backgroundColor: ((selectedItem as TextItem).bold ?? false) ? '#007bff' : 'white',
-                                        color: ((selectedItem as TextItem).bold ?? false) ? 'white' : '#333',
-                                        cursor: 'pointer',
-                                        transition: 'all 0.2s ease'
-                                    }}
-                                    onMouseEnter={(e) => {
-                                        if (!((selectedItem as TextItem).bold ?? false)) {
-                                            e.currentTarget.style.backgroundColor = '#f0f0f0';
-                                        }
-                                    }}
-                                    onMouseLeave={(e) => {
-                                        if (!((selectedItem as TextItem).bold ?? false)) {
-                                            e.currentTarget.style.backgroundColor = 'white';
-                                        }
-                                    }}
-                                >
-                                    B
-                                </button>
-
-                                {/* Italic Button */}
-                                <button
-                                    onClick={() => {
-                                        setCanvasItems(items =>
-                                            items.map(item =>
-                                                selectedIds.includes(item.id) && item.type === 'text'
-                                                    ? { ...item, italic: !(item as TextItem).italic }
-                                                    : item
-                                            )
-                                        );
-                                    }}
-                                    style={{
-                                        flex: 1,
-                                        padding: '8px 12px',
-                                        fontSize: '14px',
-                                        fontStyle: 'italic',
-                                        fontWeight: 'bold',
-                                        border: '2px solid #ddd',
-                                        borderRadius: '4px',
-                                        backgroundColor: ((selectedItem as TextItem).italic ?? false) ? '#007bff' : 'white',
-                                        color: ((selectedItem as TextItem).italic ?? false) ? 'white' : '#333',
-                                        cursor: 'pointer',
-                                        transition: 'all 0.2s ease'
-                                    }}
-                                    onMouseEnter={(e) => {
-                                        if (!((selectedItem as TextItem).italic ?? false)) {
-                                            e.currentTarget.style.backgroundColor = '#f0f0f0';
-                                        }
-                                    }}
-                                    onMouseLeave={(e) => {
-                                        if (!((selectedItem as TextItem).italic ?? false)) {
-                                            e.currentTarget.style.backgroundColor = 'white';
-                                        }
-                                    }}
-                                >
-                                    I
-                                </button>
-
-                                {/* Underline Button */}
-                                <button
-                                    onClick={() => {
-                                        setCanvasItems(items =>
-                                            items.map(item =>
-                                                selectedIds.includes(item.id) && item.type === 'text'
-                                                    ? { ...item, underline: !(item as TextItem).underline }
-                                                    : item
-                                            )
-                                        );
-                                    }}
-                                    style={{
-                                        flex: 1,
-                                        padding: '8px 12px',
-                                        fontSize: '14px',
-                                        fontWeight: 'bold',
-                                        textDecoration: 'underline',
-                                        border: '2px solid #ddd',
-                                        borderRadius: '4px',
-                                        backgroundColor: ((selectedItem as TextItem).underline ?? false) ? '#007bff' : 'white',
-                                        color: ((selectedItem as TextItem).underline ?? false) ? 'white' : '#333',
-                                        cursor: 'pointer',
-                                        transition: 'all 0.2s ease'
-                                    }}
-                                    onMouseEnter={(e) => {
-                                        if (!((selectedItem as TextItem).underline ?? false)) {
-                                            e.currentTarget.style.backgroundColor = '#f0f0f0';
-                                        }
-                                    }}
-                                    onMouseLeave={(e) => {
-                                        if (!((selectedItem as TextItem).underline ?? false)) {
-                                            e.currentTarget.style.backgroundColor = 'white';
-                                        }
-                                    }}
-                                >
-                                    U
-                                </button>
-                            </div>
                         </div>
 
                         {/* Font Size Control */}
@@ -1107,13 +955,9 @@ const TemplateEditor: React.FC = () => {
                                 type="number" 
                                 step="1"
                                 min="1"
-                                value={getInputValue(`rect-height-${selectedId}`, (selectedItem as any).height || 50)}
+                                value={(selectedItem as any).height || 50}
                                 onChange={(e) => {
-                                    handleNumberInputChange(`rect-height-${selectedId}`, e.target.value);
-                                }}
-                                onBlur={() => handleNumberInputBlur(`rect-height-${selectedId}`)}
-                                onKeyDown={(e) => handleNumberInputKeyDown(e, `rect-height-${selectedId}`, () => {
-                                    const newHeight = parseInt(getInputValue(`rect-height-${selectedId}`, (selectedItem as any).height || 50)) || 50;
+                                    const newHeight = parseInt(e.target.value) || 50;
                                     setCanvasItems(items =>
                                         items.map(item => {
                                             if (selectedIds.includes(item.id) && item.type === 'rect') {
@@ -1123,7 +967,7 @@ const TemplateEditor: React.FC = () => {
                                             return item;
                                         })
                                     );
-                                })}
+                                }}
                                 style={{ 
                                     width: '100%', 
                                     padding: '4px 6px', 
@@ -2415,15 +2259,15 @@ const TemplateEditor: React.FC = () => {
         } else if (item.type === 'text') {
             // For text, find the sweet spot that properly surrounds the text
             const estimatedWidth = estimateTextWidth(item.text, item.fontSize, (item as TextItem).fontFamily);
-            const estimatedHeight = item.fontSize; // Use fontSize as the height
+            const estimatedHeight = item.fontSize * 0.8; // Reduced from 1.0 to fit closer
             
             // Make handles slightly larger and proportional to text height
             handleSize = Math.max(4, Math.min(item.fontSize * 0.25, 10));
             
-            // Position handles exactly at the text boundaries
-            // item.y is the top edge, text baseline is at item.y + fontSize
-            const textTop = item.y; // Top edge of text at item.y
-            const textBottom = item.y + estimatedHeight; // Bottom edge
+            // Position handles exactly at the text boundaries (no padding)
+            // Text baseline is at item.y, so text extends upward
+            const textTop = item.y - estimatedHeight;
+            const textBottom = item.y; // Baseline position
             const textLeft = item.x; // Exact left edge of text
             const textRight = item.x + estimatedWidth; // Exact right edge of text
             
@@ -2473,7 +2317,7 @@ const TemplateEditor: React.FC = () => {
                     newItem = { id: newId, type: 'circle', x: 100, y: 100, radius: 30, color: '#ff0000', zIndex: newZIndex };
                     break;
                 case 'text':
-                    newItem = { id: newId, type: 'text', x: 50, y: 50, text: 'New Text', fontSize: 14, color: '#000000', fontFamily: availableFonts[0].value, bold: false, italic: false, underline: false, zIndex: newZIndex };
+                    newItem = { id: newId, type: 'text', x: 50, y: 50, text: 'New Text', fontSize: 14, color: '#000000', fontFamily: availableFonts[0].value, zIndex: newZIndex };
                     break;
                 case 'line':
                     newItem = { id: newId, type: 'line', x: 50, y: 50, x2: 150, y2: 50, strokeWidth: 2, thickness: 1, color: '#000000', zIndex: newZIndex };
@@ -2613,8 +2457,7 @@ const TemplateEditor: React.FC = () => {
         canvasItems.forEach((item, index) => {
             if (item.type === 'text') {
                 // Check if text contains brackets indicating a variable
-                const safeText = String(item.text || '');
-                const bracketMatch = safeText.match(/^\[(.+)\]$/);
+                const bracketMatch = item.text.match(/^\[(.+)\]$/);
                 
                 if (bracketMatch) {
                     // Text is in format [variableName] - create a var element
@@ -2635,7 +2478,7 @@ const TemplateEditor: React.FC = () => {
                     // Regular text element
                     const fontFamily = item.fontFamily || availableFonts[0].value;
                     const combinationKey = `${fontFamily}|${item.fontSize}`;
-                    const element: any = {
+                    const element = {
                         type: 'text',
                         fill: colorToFill(item.color),
                         text: item.text,
@@ -2644,16 +2487,6 @@ const TemplateEditor: React.FC = () => {
                         anchor: item.anchor || 'ls',
                         font: fontCombinationToIndex.get(combinationKey) || 0
                     };
-                    
-                    // Add formatting flags as comments (for reference, ESL may not support these)
-                    if (item.bold || item.italic || item.underline) {
-                        element._formatting = {
-                            bold: item.bold || false,
-                            italic: item.italic || false,
-                            underline: item.underline || false
-                        };
-                    }
-                    
                     yamlData.el.push(element);
                 }
             } else if (item.type === 'rect') {
@@ -2841,40 +2674,20 @@ const TemplateEditor: React.FC = () => {
                 
                 // Use the same font family as in the SVG display
                 const fontFamily = (item as TextItem).fontFamily || availableFonts[0].value;
-                const fontWeight = ((item as TextItem).bold ?? false) ? 'bold' : 'normal';
-                const fontStyle = ((item as TextItem).italic ?? false) ? 'italic' : 'normal';
+                ctx.font = `${Math.round(item.fontSize)}px ${fontFamily}`;
                 
-                ctx.font = `${fontStyle} ${fontWeight} ${Math.round(item.fontSize)}px ${fontFamily}`;
-                ctx.textBaseline = 'hanging'; // Use 'hanging' to match SVG's dominantBaseline="hanging"
+                // Measure actual text width for positioning
+                const textMetrics = ctx.measureText(item.text);
+                const textWidth = textMetrics.width;
                 
                 // Only constrain left boundary - allow text to extend beyond right edge
                 const constrainedX = Math.max(0, item.x);
                 
-                // Handle multi-line text
-                const text = String(item.text || '');
-                const lines = text.split('\n');
-                const lineHeight = item.fontSize * 1.2;
-                
-                lines.forEach((line, index) => {
-                    const y = Math.round(item.y - 2 + (index * lineHeight));
-                    ctx.fillText(
-                        line,
-                        Math.round(constrainedX - 1), // Offset by -1 for x-axis font spacing
-                        y // Offset by -2 and add line spacing
-                    );
-                    
-                    // Draw underline if enabled
-                    if ((item as TextItem).underline ?? false) {
-                        const textWidth = ctx.measureText(line).width;
-                        const underlineY = y + item.fontSize + 1;
-                        ctx.beginPath();
-                        ctx.moveTo(Math.round(constrainedX - 1), underlineY);
-                        ctx.lineTo(Math.round(constrainedX - 1 + textWidth), underlineY);
-                        ctx.strokeStyle = exactColor;
-                        ctx.lineWidth = Math.max(1, Math.round(item.fontSize / 12));
-                        ctx.stroke();
-                    }
-                });
+                ctx.fillText(
+                    item.text,
+                    Math.round(constrainedX),
+                    Math.round(item.y)
+                );
             } else if (item.type === 'line') {
                 // Render line as a rectangle with specified thickness
                 const thickness = item.thickness || 1;
@@ -3033,15 +2846,14 @@ const TemplateEditor: React.FC = () => {
                 const parsedData = parseYAMLString(text);
                 console.log('Parsed data:', parsedData); // Debug log
                 
-                if (!parsedData || !parsedData.el || !Array.isArray(parsedData.el) || parsedData.el.length === 0) {
+                if (!parsedData || !parsedData.el || parsedData.el.length === 0) {
                     alert('Invalid YAML file format. Could not find elements.');
                     console.error('Parsed data is invalid:', parsedData);
                     return;
                 }
                 
                 // Helper function to convert fill value to color
-                const fillToColor = (fill: number | undefined): string => {
-                    if (fill === undefined || fill === null) return '#000000';
+                const fillToColor = (fill: number): string => {
                     switch (fill) {
                         case 0: return '#000000'; // black
                         case 1: return '#ffffff'; // white
@@ -3056,44 +2868,31 @@ const TemplateEditor: React.FC = () => {
                 let nextId = 1;
                 
                 parsedData.el.forEach((element: any) => {
-                    try {
-                        console.log('Processing element:', element); // Debug log
-                        
-                        if (!element || !element.type) {
-                            console.warn('Skipping invalid element:', element);
-                            return;
-                        }
+                    console.log('Processing element:', element); // Debug log
                     
-                        if (element.type === 'text' || element.type === 'var') {
-                            // Get font information with safe defaults
-                            const fontIndex = typeof element.font === 'number' ? element.font : 0;
-                            const fonts = Array.isArray(parsedData.fonts) ? parsedData.fonts : [];
-                            const font = fonts[fontIndex] || { size: 16, type: 'DejaVuSans' };
-                            
-                            // Map ESL font back to web font
-                            const webFont = getWebFontFromEslFont(font.type || 'DejaVuSans');
-                            
-                            // Safely extract formatting properties
-                            const formatting = (element._formatting && typeof element._formatting === 'object') ? element._formatting : {};
-                            
-                            const textItem: TextItem = {
-                                id: nextId++,
-                                type: 'text',
-                                x: typeof element.x === 'number' ? element.x : 0,
-                                y: typeof element.y === 'number' ? element.y : 0,
-                                text: element.type === 'var' ? `[${element.var || ''}]` : (element.text || ''),
-                                color: fillToColor(element.fill),
-                                fontSize: typeof font.size === 'number' ? font.size : 16,
-                                fontFamily: webFont,
-                                anchor: element.anchor || 'ls',
-                                bold: formatting.bold === true,
-                                italic: formatting.italic === true,
-                                underline: formatting.underline === true,
-                                zIndex: newItems.length
-                            };
-                            newItems.push(textItem);
-                            console.log('Created text item:', textItem); // Debug log
-                        } else if (element.type === 'rect') {
+                    if (element.type === 'text' || element.type === 'var') {
+                        // Get font information
+                        const fontIndex = element.font || 0;
+                        const font = parsedData.fonts?.[fontIndex] || { size: 16, type: 'DejaVuSans' };
+                        
+                        // Map ESL font back to web font
+                        const webFont = getWebFontFromEslFont(font.type);
+                        
+                        const textItem: TextItem = {
+                            id: nextId++,
+                            type: 'text',
+                            x: element.x || 0,
+                            y: element.y || 0,
+                            text: element.type === 'var' ? `[${element.var}]` : (element.text || ''),
+                            color: fillToColor(element.fill || 0),
+                            fontSize: font.size,
+                            fontFamily: webFont,
+                            anchor: element.anchor || 'ls',
+                            zIndex: newItems.length
+                        };
+                        newItems.push(textItem);
+                        console.log('Created text item:', textItem); // Debug log
+                    } else if (element.type === 'rect') {
                         // Convert rect from x1,y1,x2,y2 to x,y,width,height
                         const x1 = element.x1 || 0;
                         const y1 = element.y1 || 0;
@@ -3112,10 +2911,6 @@ const TemplateEditor: React.FC = () => {
                         };
                         newItems.push(rectItem);
                         console.log('Created rect item:', rectItem); // Debug log
-                    }
-                    } catch (elementError) {
-                        console.error('Error processing element:', element, elementError);
-                        // Continue processing other elements
                     }
                 });
                 
@@ -3476,10 +3271,9 @@ const TemplateEditor: React.FC = () => {
                             overflow: 'auto',
                             flex: 1,
                             display: 'flex',
-                            justifyContent: 'flex-start',
+                            justifyContent: 'center',
                             alignItems: 'flex-start',
-                            padding: '20px',
-                            minHeight: 0 // Critical for flex child to enable scrolling
+                            padding: '20px 0 0 0'
                         }}
                         onMouseDown={handleContainerMouseDown}
                     >
@@ -3548,38 +3342,21 @@ const TemplateEditor: React.FC = () => {
                                             );
                                         }
                                         if (item.type === "text") {
-                                            const text = String(item.text || '');
-                                            const lines = text.split('\n');
-                                            const lineHeight = item.fontSize * 1.2;
                                             return (
                                                 <text
                                                     key={item.id}
-                                                    x={item.x - 1}
-                                                    y={item.y - 2}
+                                                    x={item.x}
+                                                    y={item.y}
                                                     fill={item.color}
                                                     fontSize={item.fontSize}
-                                                    dominantBaseline="hanging"
-                                                    textAnchor="start"
                                                     style={{ 
                                                         cursor: "grab", 
                                                         userSelect: "none",
-                                                        fontFamily: (item as TextItem).fontFamily || availableFonts[0].value,
-                                                        lineHeight: 1,
-                                                        fontWeight: ((item as TextItem).bold ?? false) ? 'bold' : 'normal',
-                                                        fontStyle: ((item as TextItem).italic ?? false) ? 'italic' : 'normal',
-                                                        textDecoration: ((item as TextItem).underline ?? false) ? 'underline' : 'none'
+                                                        fontFamily: (item as TextItem).fontFamily || availableFonts[0].value
                                                     }}
                                                     onMouseDown={(e) => handleMouseDown(e, item.id)}
                                                 >
-                                                    {lines.map((line, index) => (
-                                                        <tspan
-                                                            key={index}
-                                                            x={item.x - 1}
-                                                            dy={index === 0 ? 0 : lineHeight}
-                                                        >
-                                                            {line}
-                                                        </tspan>
-                                                    ))}
+                                                    {item.text}
                                                 </text>
                                             );
                                         }
