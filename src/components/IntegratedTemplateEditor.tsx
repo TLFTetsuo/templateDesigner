@@ -266,6 +266,24 @@ const TemplateEditor: React.FC = () => {
     const [canvasHeight, setCanvasHeight] = useState<number>(122);
     const [templateFilename, setTemplateFilename] = useState<string>('New template');
     const [lastSavedFilename, setLastSavedFilename] = useState<string>('');
+    
+    // ESL configuration state
+    const [eslType, setEslType] = useState<'bw' | 'bwry'>('bwry');
+    const [eslAxis, setEslAxis] = useState<0 | 1>(0);
+    
+    // Menu dropdown state
+    const [openMenu, setOpenMenu] = useState<string | null>(null);
+    const [showAboutDialog, setShowAboutDialog] = useState<boolean>(false);
+    const [showEslConfigDialog, setShowEslConfigDialog] = useState<boolean>(false);
+    
+    // Zoom controls drag state
+    const [zoomControlsPosition, setZoomControlsPosition] = useState({ x: 20, y: 20 }); // x from right, y from bottom
+    const [isDraggingZoomControls, setIsDraggingZoomControls] = useState(false);
+    const [zoomDragStart, setZoomDragStart] = useState({ x: 0, y: 0 });
+    
+    // Text editing on canvas state
+    const [editingTextId, setEditingTextId] = useState<number | null>(null);
+    const [editingTextValue, setEditingTextValue] = useState<string>('');
 
     // Input field editing state - tracks temporary values during editing
     const [editingFields, setEditingFields] = useState<{[key: string]: string}>({});
@@ -662,6 +680,11 @@ const TemplateEditor: React.FC = () => {
                             <textarea 
                                 value={(selectedItem as any).text || ''}
                                 onChange={(e) => {
+                                    // Close canvas editing if active
+                                    if (editingTextId !== null) {
+                                        setEditingTextId(null);
+                                        setEditingTextValue('');
+                                    }
                                     setCanvasItems(items =>
                                         items.map(item =>
                                             selectedIds.includes(item.id) && item.type === 'text'
@@ -1844,6 +1867,27 @@ const TemplateEditor: React.FC = () => {
         });
     }, [resizing, canvasItems, zoomLevel]);
 
+    // Double-click handler for text editing on canvas
+    const handleTextDoubleClick = useCallback((e: React.MouseEvent, item: TextItem) => {
+        e.stopPropagation();
+        setEditingTextId(item.id);
+        setEditingTextValue(item.text);
+        setSelectedIds([item.id]);
+    }, []);
+
+    // Finish editing text
+    const finishTextEditing = useCallback(() => {
+        if (editingTextId !== null && editingTextValue !== undefined) {
+            setCanvasItems(prev => prev.map(item => 
+                item.id === editingTextId && item.type === 'text'
+                    ? { ...item, text: editingTextValue }
+                    : item
+            ));
+        }
+        setEditingTextId(null);
+        setEditingTextValue('');
+    }, [editingTextId, editingTextValue]);
+
     // Canvas background click handler for drag-to-select
     const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
         // Only handle if clicking on the canvas background (not on an element)
@@ -2601,11 +2645,14 @@ const TemplateEditor: React.FC = () => {
         // Get the index for default font combination for template variables
         const defaultFontIndex = fontCombinationToIndex.get(defaultCombination) || 0;
 
-        // Generate the YAML structure
+        // Generate the YAML structure with new fields
         const yamlData: any = {
             fontbase: 'fonts/',
             fonts: fonts,
-            type: 'bwry',
+            type: eslType,
+            x_res: canvasWidth,
+            y_res: canvasHeight,
+            axis: eslAxis,
             el: [] as any[]
         };
 
@@ -2779,7 +2826,7 @@ const TemplateEditor: React.FC = () => {
             document.body.removeChild(link);
             URL.revokeObjectURL(url);
         }
-    }, [canvasItems, canvasWidth, canvasHeight, templateFilename, lastSavedFilename]);
+    }, [canvasItems, canvasWidth, canvasHeight, templateFilename, lastSavedFilename, eslType, eslAxis]);
 
     // Export to JPG function with pixel-accurate rendering
     const exportToJPG = useCallback(() => {
@@ -3124,6 +3171,24 @@ const TemplateEditor: React.FC = () => {
                 // Extract filename without extension
                 const filenameWithoutExt = file.name.replace(/\.(yaml|yml)$/i, '');
                 
+                // Update canvas dimensions from YAML if available
+                if (typeof parsedData.x_res === 'number' && parsedData.x_res > 0) {
+                    setCanvasWidth(parsedData.x_res);
+                }
+                if (typeof parsedData.y_res === 'number' && parsedData.y_res > 0) {
+                    setCanvasHeight(parsedData.y_res);
+                }
+                
+                // Update ESL type from YAML if available
+                if (parsedData.type === 'bw' || parsedData.type === 'bwry') {
+                    setEslType(parsedData.type);
+                }
+                
+                // Update ESL axis from YAML if available
+                if (parsedData.axis === 0 || parsedData.axis === 1) {
+                    setEslAxis(parsedData.axis);
+                }
+                
                 // Update canvas with imported items and set filename
                 setCanvasItems(newItems);
                 setSelectedIds([]);
@@ -3173,6 +3238,12 @@ const TemplateEditor: React.FC = () => {
             } else if (trimmed.startsWith('type:') && !inFonts && !inElements) {
                 // Root level type
                 result.type = trimmed.split(':')[1].trim().replace(/['"]/g, '');
+            } else if (trimmed.startsWith('x_res:')) {
+                result.x_res = parseInt(trimmed.split(':')[1].trim());
+            } else if (trimmed.startsWith('y_res:')) {
+                result.y_res = parseInt(trimmed.split(':')[1].trim());
+            } else if (trimmed.startsWith('axis:')) {
+                result.axis = parseInt(trimmed.split(':')[1].trim());
             } else if (trimmed.startsWith('- ')) {
                 // List item - start a new element
                 if (currentElement) {
@@ -3264,6 +3335,11 @@ const TemplateEditor: React.FC = () => {
         // Add type
         yaml += `type: ${data.type}\n`;
         
+        // Add new ESL configuration fields
+        yaml += `x_res: ${data.x_res}\n`;
+        yaml += `y_res: ${data.y_res}\n`;
+        yaml += `axis: ${data.axis}\n`;
+        
         // Add elements array
         yaml += 'el:\n';
         data.el.forEach((element: any) => {
@@ -3303,6 +3379,122 @@ const TemplateEditor: React.FC = () => {
         return yaml;
     };
 
+    // Menu handlers
+    const handleMenuClick = (menuName: string) => {
+        setOpenMenu(openMenu === menuName ? null : menuName);
+    };
+
+    const handleMenuItemClick = (action: string) => {
+        setOpenMenu(null);
+        
+        switch (action) {
+            case 'load':
+                importTemplate();
+                break;
+            case 'save':
+                exportToYAML();
+                break;
+            case 'quit':
+                if (confirm('Are you sure you want to quit? Any unsaved changes will be lost.')) {
+                    window.close();
+                }
+                break;
+            case 'selectAll':
+                setSelectedIds(canvasItems.map(item => item.id));
+                break;
+            case 'selectNone':
+                setSelectedIds([]);
+                break;
+            case 'clearCanvas':
+                if (confirm('Are you sure you want to clear the canvas? This cannot be undone.')) {
+                    setCanvasItems([]);
+                    setSelectedIds([]);
+                }
+                break;
+            case 'eslConfig':
+                setShowEslConfigDialog(true);
+                break;
+            case 'zoomIn':
+                zoomIn();
+                break;
+            case 'zoomOut':
+                zoomOut();
+                break;
+            case 'resetZoom':
+                resetZoom();
+                break;
+            case 'preview':
+                exportToJPG();
+                break;
+            case 'about':
+                setShowAboutDialog(true);
+                break;
+        }
+    };
+
+    // Close menu when clicking outside
+    React.useEffect(() => {
+        const handleClickOutside = () => {
+            if (openMenu) setOpenMenu(null);
+        };
+        
+        document.addEventListener('click', handleClickOutside);
+        return () => document.removeEventListener('click', handleClickOutside);
+    }, [openMenu]);
+
+    // Zoom controls drag handlers
+    const handleZoomControlMouseDown = (e: React.MouseEvent) => {
+        if ((e.target as HTMLElement).tagName === 'BUTTON') {
+            return; // Don't drag when clicking buttons
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDraggingZoomControls(true);
+        setZoomDragStart({ x: e.clientX, y: e.clientY });
+    };
+
+    React.useEffect(() => {
+        if (!isDraggingZoomControls) return;
+
+        const handleMouseMove = (e: MouseEvent) => {
+            const deltaX = zoomDragStart.x - e.clientX; // Inverted because right: position
+            const deltaY = zoomDragStart.y - e.clientY; // Inverted because bottom: position
+            
+            setZoomControlsPosition(prev => ({
+                x: Math.max(10, prev.x + deltaX),
+                y: Math.max(10, prev.y + deltaY)
+            }));
+            
+            setZoomDragStart({ x: e.clientX, y: e.clientY });
+        };
+
+        const handleMouseUp = () => {
+            setIsDraggingZoomControls(false);
+        };
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+
+        return () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [isDraggingZoomControls, zoomDragStart]);
+
+    // Menu item style
+    const menuItemStyle: React.CSSProperties = {
+        display: 'block',
+        width: '100%',
+        padding: '10px 16px',
+        backgroundColor: 'transparent',
+        border: 'none',
+        textAlign: 'left',
+        cursor: 'pointer',
+        fontSize: '14px',
+        color: '#333',
+        transition: 'background-color 0.2s'
+    };
+
     return (
         <div className={styles.eslDesigner}>
             {/* Header */}
@@ -3311,6 +3503,423 @@ const TemplateEditor: React.FC = () => {
                     <span className={styles.logoText}>Template name: {templateFilename}</span>
                 </div>
             </div>
+
+            {/* Menu Bar */}
+            <div style={{
+                backgroundColor: '#f8f9fa',
+                borderBottom: '1px solid #ddd',
+                padding: '0',
+                display: 'flex',
+                position: 'relative',
+                zIndex: 1000
+            }}>
+                {/* File Menu */}
+                <div style={{ position: 'relative' }}>
+                    <button
+                        onClick={(e) => { e.stopPropagation(); handleMenuClick('file'); }}
+                        onMouseEnter={() => { if (openMenu) setOpenMenu('file'); }}
+                        style={{
+                            padding: '8px 16px',
+                            backgroundColor: openMenu === 'file' ? '#e9ecef' : 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            fontWeight: '500',
+                            color: '#333'
+                        }}
+                    >
+                        File
+                    </button>
+                    {openMenu === 'file' && (
+                        <div style={{
+                            position: 'absolute',
+                            top: '100%',
+                            left: 0,
+                            backgroundColor: 'white',
+                            border: '1px solid #ddd',
+                            borderRadius: '4px',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                            minWidth: '180px',
+                            zIndex: 1001
+                        }}>
+                            <button 
+                                onClick={() => handleMenuItemClick('load')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                Load template
+                            </button>
+                            <button 
+                                onClick={() => handleMenuItemClick('save')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                Save template
+                            </button>
+                            <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }} />
+                            <button 
+                                onClick={() => handleMenuItemClick('quit')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                Quit
+                            </button>
+                        </div>
+                    )}
+                </div>
+
+                {/* Edit Menu */}
+                <div style={{ position: 'relative' }}>
+                    <button
+                        onClick={(e) => { e.stopPropagation(); handleMenuClick('edit'); }}
+                        onMouseEnter={() => { if (openMenu) setOpenMenu('edit'); }}
+                        style={{
+                            padding: '8px 16px',
+                            backgroundColor: openMenu === 'edit' ? '#e9ecef' : 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            fontWeight: '500',
+                            color: '#333'
+                        }}
+                    >
+                        Edit
+                    </button>
+                    {openMenu === 'edit' && (
+                        <div style={{
+                            position: 'absolute',
+                            top: '100%',
+                            left: 0,
+                            backgroundColor: 'white',
+                            border: '1px solid #ddd',
+                            borderRadius: '4px',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                            minWidth: '180px',
+                            zIndex: 1001
+                        }}>
+                            <button 
+                                onClick={() => handleMenuItemClick('selectAll')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                Select all
+                            </button>
+                            <button 
+                                onClick={() => handleMenuItemClick('selectNone')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                Select none
+                            </button>
+                            <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }} />
+                            <button 
+                                onClick={() => handleMenuItemClick('clearCanvas')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                Clear canvas
+                            </button>
+                            <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }} />
+                            <button 
+                                onClick={() => handleMenuItemClick('eslConfig')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                ESL config
+                            </button>
+                        </div>
+                    )}
+                </div>
+
+                {/* View Menu */}
+                <div style={{ position: 'relative' }}>
+                    <button
+                        onClick={(e) => { e.stopPropagation(); handleMenuClick('view'); }}
+                        onMouseEnter={() => { if (openMenu) setOpenMenu('view'); }}
+                        style={{
+                            padding: '8px 16px',
+                            backgroundColor: openMenu === 'view' ? '#e9ecef' : 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            fontWeight: '500',
+                            color: '#333'
+                        }}
+                    >
+                        View
+                    </button>
+                    {openMenu === 'view' && (
+                        <div style={{
+                            position: 'absolute',
+                            top: '100%',
+                            left: 0,
+                            backgroundColor: 'white',
+                            border: '1px solid #ddd',
+                            borderRadius: '4px',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                            minWidth: '180px',
+                            zIndex: 1001
+                        }}>
+                            <button 
+                                onClick={() => handleMenuItemClick('zoomIn')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                Zoom in
+                            </button>
+                            <button 
+                                onClick={() => handleMenuItemClick('zoomOut')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                Zoom out
+                            </button>
+                            <button 
+                                onClick={() => handleMenuItemClick('resetZoom')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                Reset
+                            </button>
+                            <div style={{ borderTop: '1px solid #eee', margin: '4px 0' }} />
+                            <button 
+                                onClick={() => handleMenuItemClick('preview')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                Preview
+                            </button>
+                        </div>
+                    )}
+                </div>
+
+                {/* Help Menu */}
+                <div style={{ position: 'relative' }}>
+                    <button
+                        onClick={(e) => { e.stopPropagation(); handleMenuClick('help'); }}
+                        onMouseEnter={() => { if (openMenu) setOpenMenu('help'); }}
+                        style={{
+                            padding: '8px 16px',
+                            backgroundColor: openMenu === 'help' ? '#e9ecef' : 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            fontWeight: '500',
+                            color: '#333'
+                        }}
+                    >
+                        Help
+                    </button>
+                    {openMenu === 'help' && (
+                        <div style={{
+                            position: 'absolute',
+                            top: '100%',
+                            left: 0,
+                            backgroundColor: 'white',
+                            border: '1px solid #ddd',
+                            borderRadius: '4px',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                            minWidth: '180px',
+                            zIndex: 1001
+                        }}>
+                            <button 
+                                onClick={() => handleMenuItemClick('about')} 
+                                style={menuItemStyle}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                                About
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* About Dialog */}
+            {showAboutDialog && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 2000
+                }} onClick={() => setShowAboutDialog(false)}>
+                    <div style={{
+                        backgroundColor: 'white',
+                        padding: '30px',
+                        borderRadius: '8px',
+                        boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+                        maxWidth: '400px',
+                        textAlign: 'center'
+                    }} onClick={(e) => e.stopPropagation()}>
+                        <h2 style={{ margin: '0 0 20px 0', fontSize: '20px', color: '#333' }}>About</h2>
+                        <p style={{ margin: '0 0 20px 0', fontSize: '16px', color: '#666' }}>
+                            Eon Displays Template Designer v0.0.2
+                        </p>
+                        <button 
+                            onClick={() => setShowAboutDialog(false)}
+                            style={{
+                                padding: '8px 24px',
+                                backgroundColor: '#007bff',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '14px',
+                                fontWeight: '500'
+                            }}
+                        >
+                            Close
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* ESL Config Dialog */}
+            {showEslConfigDialog && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 2000
+                }} onClick={() => setShowEslConfigDialog(false)}>
+                    <div style={{
+                        backgroundColor: 'white',
+                        padding: '30px',
+                        borderRadius: '8px',
+                        boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+                        maxWidth: '500px',
+                        width: '90%'
+                    }} onClick={(e) => e.stopPropagation()}>
+                        <h2 style={{ margin: '0 0 25px 0', fontSize: '20px', color: '#333' }}>ESL Configuration</h2>
+                        
+                        {/* Size Section */}
+                        <div style={{ marginBottom: '25px' }}>
+                            <h3 style={{ margin: '0 0 15px 0', fontSize: '16px', color: '#555', fontWeight: '600' }}>Canvas Size</h3>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                    <span style={{ fontWeight: '500', minWidth: '70px' }}>Width:</span>
+                                    <input 
+                                        type="number" 
+                                        value={canvasWidth}
+                                        onChange={handleCanvasWidthChange}
+                                        min="1"
+                                        style={{ 
+                                            flex: 1,
+                                            padding: '6px 10px', 
+                                            border: '1px solid #ddd', 
+                                            borderRadius: '4px',
+                                            fontSize: '14px'
+                                        }}
+                                    />
+                                    <span style={{ fontSize: '13px', color: '#666' }}>px</span>
+                                </label>
+                                <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                    <span style={{ fontWeight: '500', minWidth: '70px' }}>Height:</span>
+                                    <input 
+                                        type="number" 
+                                        value={canvasHeight}
+                                        onChange={handleCanvasHeightChange}
+                                        min="1"
+                                        style={{ 
+                                            flex: 1,
+                                            padding: '6px 10px', 
+                                            border: '1px solid #ddd', 
+                                            borderRadius: '4px',
+                                            fontSize: '14px'
+                                        }}
+                                    />
+                                    <span style={{ fontSize: '13px', color: '#666' }}>px</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        {/* ESL Configuration Section */}
+                        <div style={{ marginBottom: '25px' }}>
+                            <h3 style={{ margin: '0 0 15px 0', fontSize: '16px', color: '#555', fontWeight: '600' }}>ESL Settings</h3>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                    <span style={{ fontWeight: '500', minWidth: '70px' }}>Type:</span>
+                                    <select 
+                                        value={eslType}
+                                        onChange={(e) => setEslType(e.target.value as 'bw' | 'bwry')}
+                                        style={{ 
+                                            flex: 1,
+                                            padding: '6px 10px', 
+                                            border: '1px solid #ddd', 
+                                            borderRadius: '4px',
+                                            fontSize: '14px',
+                                            backgroundColor: 'white',
+                                            cursor: 'pointer'
+                                        }}
+                                    >
+                                        <option value="bw">Black & White (bw)</option>
+                                        <option value="bwry">Black, White, Red, Yellow (bwry)</option>
+                                    </select>
+                                </label>
+                                <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                    <span style={{ fontWeight: '500', minWidth: '70px' }}>Axis:</span>
+                                    <select 
+                                        value={eslAxis}
+                                        onChange={(e) => setEslAxis(parseInt(e.target.value) as 0 | 1)}
+                                        style={{ 
+                                            flex: 1,
+                                            padding: '6px 10px', 
+                                            border: '1px solid #ddd', 
+                                            borderRadius: '4px',
+                                            fontSize: '14px',
+                                            backgroundColor: 'white',
+                                            cursor: 'pointer'
+                                        }}
+                                    >
+                                        <option value="0">Normal (0)</option>
+                                        <option value="1">Inverted (1)</option>
+                                    </select>
+                                </label>
+                            </div>
+                        </div>
+
+                        <button 
+                            onClick={() => setShowEslConfigDialog(false)}
+                            style={{
+                                width: '100%',
+                                padding: '10px 24px',
+                                backgroundColor: '#007bff',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '14px',
+                                fontWeight: '500'
+                            }}
+                        >
+                            Done
+                        </button>
+                    </div>
+                </div>
+            )}
 
             <div className={styles.mainLayout}>
                 {/* Left Sidebar with Navigation */}
@@ -3336,139 +3945,6 @@ const TemplateEditor: React.FC = () => {
 
                 {/* Main Canvas Area */}
                 <div className={styles.canvasArea}>
-                    <div className={styles.canvasToolbar}>
-                        <div className={styles.canvasControls}>
-                            <button className={styles.btnSecondary} onClick={importTemplate}>Load Template</button>
-                            <button className={styles.btnSecondary} onClick={clearCanvas}>Clear Canvas</button>
-                            <button className={styles.btnPrimary} onClick={exportToYAML}>Save Template</button>
-                            <button className={styles.btnPrimary} onClick={exportToJPG}>Preview (download JPG)</button>
-                        </div>
-                    </div>
-                    
-                    {/* Canvas Dimension Controls */}
-                    <div style={{ 
-                        padding: '15px 20px', 
-                        backgroundColor: '#fff', 
-                        borderBottom: '1px solid #e5e5e5',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '20px'
-                    }}>
-                        <h3 style={{ margin: 0, fontSize: '16px', color: '#333' }}>Canvas Dimensions</h3>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <label style={{ fontSize: '14px', fontWeight: '500' }}>
-                                Width (px):
-                                <input 
-                                    type="number" 
-                                    value={canvasWidth}
-                                    onChange={handleCanvasWidthChange}
-                                    min="1"
-                                    style={{ 
-                                        marginLeft: '5px',
-                                        width: '80px', 
-                                        padding: '4px 8px', 
-                                        border: '1px solid #ddd', 
-                                        borderRadius: '4px',
-                                        fontSize: '14px'
-                                    }}
-                                />
-                            </label>
-                            <span style={{ color: '#666' }}>×</span>
-                            <label style={{ fontSize: '14px', fontWeight: '500' }}>
-                                Height (px):
-                                <input 
-                                    type="number" 
-                                    value={canvasHeight}
-                                    onChange={handleCanvasHeightChange}
-                                    min="1"
-                                    style={{ 
-                                        marginLeft: '5px',
-                                        width: '80px', 
-                                        padding: '4px 8px', 
-                                        border: '1px solid #ddd', 
-                                        borderRadius: '4px',
-                                        fontSize: '14px'
-                                    }}
-                                />
-                            </label>
-                        </div>
-
-                        {/* Zoom Controls */}
-                        <div style={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: '8px',
-                            marginTop: '10px',
-                            padding: '8px',
-                            backgroundColor: '#f8f9fa',
-                            borderRadius: '4px',
-                            border: '1px solid #e9ecef'
-                        }}>
-                            <span style={{ fontSize: '12px', fontWeight: '500', color: '#333' }}>Zoom:</span>
-                            <button 
-                                onClick={zoomOut}
-                                disabled={zoomLevel === zoomLevels[0]}
-                                style={{ 
-                                    padding: '4px 8px', 
-                                    fontSize: '12px',
-                                    border: '1px solid #ddd',
-                                    borderRadius: '3px',
-                                    backgroundColor: zoomLevel === zoomLevels[0] ? '#f5f5f5' : 'white',
-                                    cursor: zoomLevel === zoomLevels[0] ? 'not-allowed' : 'pointer',
-                                    color: zoomLevel === zoomLevels[0] ? '#999' : '#333'
-                                }}
-                            >
-                                −
-                            </button>
-                            <select 
-                                value={zoomLevel}
-                                onChange={(e) => setSpecificZoom(parseFloat(e.target.value))}
-                                style={{ 
-                                    padding: '4px 6px', 
-                                    fontSize: '12px',
-                                    border: '1px solid #ddd',
-                                    borderRadius: '3px',
-                                    backgroundColor: 'white'
-                                }}
-                            >
-                                {zoomLevels.map(level => (
-                                    <option key={level} value={level}>
-                                        {Math.round(level * 100)}%
-                                    </option>
-                                ))}
-                            </select>
-                            <button 
-                                onClick={zoomIn}
-                                disabled={zoomLevel === zoomLevels[zoomLevels.length - 1]}
-                                style={{ 
-                                    padding: '4px 8px', 
-                                    fontSize: '12px',
-                                    border: '1px solid #ddd',
-                                    borderRadius: '3px',
-                                    backgroundColor: zoomLevel === zoomLevels[zoomLevels.length - 1] ? '#f5f5f5' : 'white',
-                                    cursor: zoomLevel === zoomLevels[zoomLevels.length - 1] ? 'not-allowed' : 'pointer',
-                                    color: zoomLevel === zoomLevels[zoomLevels.length - 1] ? '#999' : '#333'
-                                }}
-                            >
-                                +
-                            </button>
-                            <button 
-                                onClick={resetZoom}
-                                style={{ 
-                                    padding: '4px 8px', 
-                                    fontSize: '11px',
-                                    border: '1px solid #ddd',
-                                    borderRadius: '3px',
-                                    backgroundColor: 'white',
-                                    cursor: 'pointer',
-                                    color: '#666'
-                                }}
-                            >
-                                Reset
-                            </button>
-                        </div>
-                    </div>
-                    
                     <div 
                         className={styles.canvasContainer} 
                         style={{ 
@@ -3551,6 +4027,51 @@ const TemplateEditor: React.FC = () => {
                                             const text = String(item.text || '');
                                             const lines = text.split('\n');
                                             const lineHeight = item.fontSize * 1.2;
+                                            
+                                            // If this text is being edited, show input instead
+                                            if (editingTextId === item.id) {
+                                                return (
+                                                    <foreignObject
+                                                        key={item.id}
+                                                        x={item.x - 1}
+                                                        y={item.y - 2}
+                                                        width={Math.max(200, text.length * item.fontSize * 0.6)}
+                                                        height={Math.max(item.fontSize * 1.5, lines.length * lineHeight + 10)}
+                                                    >
+                                                        <textarea
+                                                            autoFocus
+                                                            value={editingTextValue}
+                                                            onChange={(e) => setEditingTextValue(e.target.value)}
+                                                            onBlur={finishTextEditing}
+                                                            onKeyDown={(e) => {
+                                                                if (e.key === 'Escape') {
+                                                                    setEditingTextId(null);
+                                                                    setEditingTextValue('');
+                                                                } else if (e.key === 'Enter' && !e.shiftKey) {
+                                                                    e.preventDefault();
+                                                                    finishTextEditing();
+                                                                }
+                                                            }}
+                                                            style={{
+                                                                width: '100%',
+                                                                height: '100%',
+                                                                fontSize: `${item.fontSize}px`,
+                                                                fontFamily: (item as TextItem).fontFamily || availableFonts[0].value,
+                                                                fontWeight: ((item as TextItem).bold ?? false) ? 'bold' : 'normal',
+                                                                fontStyle: ((item as TextItem).italic ?? false) ? 'italic' : 'normal',
+                                                                textDecoration: ((item as TextItem).underline ?? false) ? 'underline' : 'none',
+                                                                border: '2px solid #007bff',
+                                                                outline: 'none',
+                                                                padding: '2px',
+                                                                backgroundColor: 'white',
+                                                                resize: 'none',
+                                                                color: item.color
+                                                            }}
+                                                        />
+                                                    </foreignObject>
+                                                );
+                                            }
+                                            
                                             return (
                                                 <text
                                                     key={item.id}
@@ -3570,6 +4091,7 @@ const TemplateEditor: React.FC = () => {
                                                         textDecoration: ((item as TextItem).underline ?? false) ? 'underline' : 'none'
                                                     }}
                                                     onMouseDown={(e) => handleMouseDown(e, item.id)}
+                                                    onDoubleClick={(e) => handleTextDoubleClick(e, item as TextItem)}
                                                 >
                                                     {lines.map((line, index) => (
                                                         <tspan
@@ -3749,6 +4271,140 @@ const TemplateEditor: React.FC = () => {
                                 </svg>
                             </div>
                         </div>
+                        
+                        {/* Floating Zoom Controls - Bottom Right of dark area */}
+                        <div 
+                            onMouseDown={handleZoomControlMouseDown}
+                            style={{
+                                position: 'absolute',
+                                bottom: `${zoomControlsPosition.y}px`,
+                                right: `${zoomControlsPosition.x}px`,
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '0',
+                                backgroundColor: 'rgba(50, 50, 50, 0.9)',
+                                borderRadius: '8px',
+                                boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+                                zIndex: 100,
+                                cursor: isDraggingZoomControls ? 'grabbing' : 'grab',
+                                userSelect: 'none',
+                                overflow: 'hidden'
+                            }}
+                        >
+                                {/* Grab handle area */}
+                                <div style={{
+                                    padding: '8px',
+                                    textAlign: 'center',
+                                    borderBottom: '1px solid rgba(255, 255, 255, 0.2)',
+                                    fontSize: '10px',
+                                    color: 'rgba(255, 255, 255, 0.6)',
+                                    fontWeight: 'bold',
+                                    letterSpacing: '1px'
+                                }}>
+                                    ZOOM
+                                </div>
+                                
+                                {/* Buttons container */}
+                                <div style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: '4px',
+                                    padding: '8px'
+                                }}>
+                                <button 
+                                    onClick={zoomIn}
+                                    disabled={zoomLevel === zoomLevels[zoomLevels.length - 1]}
+                                    title="Zoom In"
+                                    style={{ 
+                                        width: '36px',
+                                        height: '36px',
+                                        padding: '0',
+                                        fontSize: '20px',
+                                        fontWeight: 'bold',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        backgroundColor: zoomLevel === zoomLevels[zoomLevels.length - 1] ? 'rgba(100, 100, 100, 0.5)' : 'rgba(255, 255, 255, 0.9)',
+                                        cursor: zoomLevel === zoomLevels[zoomLevels.length - 1] ? 'not-allowed' : 'pointer',
+                                        color: zoomLevel === zoomLevels[zoomLevels.length - 1] ? '#666' : '#333',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        transition: 'all 0.2s'
+                                    }}
+                                    onMouseEnter={(e) => {
+                                        if (zoomLevel !== zoomLevels[zoomLevels.length - 1]) {
+                                            e.currentTarget.style.backgroundColor = 'white';
+                                        }
+                                    }}
+                                    onMouseLeave={(e) => {
+                                        if (zoomLevel !== zoomLevels[zoomLevels.length - 1]) {
+                                            e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+                                        }
+                                    }}
+                                >
+                                    +
+                                </button>
+                                
+                                <button 
+                                    onClick={resetZoom}
+                                    title="Reset Zoom (100%)"
+                                    style={{ 
+                                        width: '36px',
+                                        height: '36px',
+                                        padding: '0',
+                                        fontSize: '18px',
+                                        fontWeight: 'bold',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                                        cursor: 'pointer',
+                                        color: '#333',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        transition: 'all 0.2s'
+                                    }}
+                                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'white'}
+                                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.9)'}
+                                >
+                                    ○
+                                </button>
+                                
+                                <button 
+                                    onClick={zoomOut}
+                                    disabled={zoomLevel === zoomLevels[0]}
+                                    title="Zoom Out"
+                                    style={{ 
+                                        width: '36px',
+                                        height: '36px',
+                                        padding: '0',
+                                        fontSize: '20px',
+                                        fontWeight: 'bold',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        backgroundColor: zoomLevel === zoomLevels[0] ? 'rgba(100, 100, 100, 0.5)' : 'rgba(255, 255, 255, 0.9)',
+                                        cursor: zoomLevel === zoomLevels[0] ? 'not-allowed' : 'pointer',
+                                        color: zoomLevel === zoomLevels[0] ? '#666' : '#333',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        transition: 'all 0.2s'
+                                    }}
+                                    onMouseEnter={(e) => {
+                                        if (zoomLevel !== zoomLevels[0]) {
+                                            e.currentTarget.style.backgroundColor = 'white';
+                                        }
+                                    }}
+                                    onMouseLeave={(e) => {
+                                        if (zoomLevel !== zoomLevels[0]) {
+                                            e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+                                        }
+                                    }}
+                                >
+                                    −
+                                </button>
+                                </div>
+                            </div>
                     </div>
                 </div>
 
