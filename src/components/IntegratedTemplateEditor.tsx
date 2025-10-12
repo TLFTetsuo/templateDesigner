@@ -54,7 +54,15 @@ interface QRCodeItem extends BaseItem {
   data: string;
 }
 
-type CanvasItem = RectItem | CircleItem | TextItem | LineItem | BarcodeItem | QRCodeItem;
+interface ImageItem extends BaseItem {
+  type: "image";
+  width: number;
+  height: number;
+  filename: string;
+  originalFilename?: string;
+}
+
+type CanvasItem = RectItem | CircleItem | TextItem | LineItem | BarcodeItem | QRCodeItem | ImageItem;
 
 // ESL Designer menu sections
 interface SidebarSection {
@@ -96,7 +104,36 @@ const getEslFontFromWebFont = (webFontFamily: string): string => {
 
 const initialCanvasItems: CanvasItem[] = [];
 
-const TemplateEditor: React.FC = () => {
+const IntegratedTemplateEditor: React.FC = () => {
+
+    // Helper function to calculate text position based on anchor point
+    const calculateAnchoredPosition = useCallback((item: TextItem, textWidth: number, textHeight: number) => {
+        const anchor = item.anchor || 'lt'; // Default to left-top
+        let x = item.x;
+        let y = item.y;
+        
+        // Handle horizontal anchoring
+        if (anchor.includes('m')) {
+            // Middle horizontal
+            x = item.x - (textWidth / 2);
+        } else if (anchor.includes('r')) {
+            // Right horizontal  
+            x = item.x - textWidth;
+        }
+        // 'l' (left) uses x as-is
+        
+        // Handle vertical anchoring
+        if (anchor.includes('s')) {
+            // Bottom vertical
+            y = item.y - textHeight;
+        } else if (anchor === 'ms' || anchor === 'ls' || anchor === 'rs') {
+            // Middle vertical (for anchors ending in 's' that mean bottom)
+            y = item.y - textHeight;
+        }
+        // 't' (top) uses y as-is
+        
+        return { x, y };
+    }, []);
 
     // Helper function to estimate text width for different font families
     const estimateTextWidth = useCallback((text: string, fontSize: number, fontFamily?: string): number => {
@@ -261,6 +298,10 @@ const TemplateEditor: React.FC = () => {
     const [resizeHandle, setResizeHandle] = useState<string | null>(null);
     const [resizeStart, setResizeStart] = useState<{ x: number; y: number; width: number; height: number }>({ x: 0, y: 0, width: 0, height: 0 });
     
+    // Ref map to store actual SVG text elements for accurate dimension measurement
+    const textElementRefs = useRef<Map<number, SVGTextElement>>(new Map());
+    const [, forceUpdate] = useState({});
+    
     // Canvas dimensions state
     const [canvasWidth, setCanvasWidth] = useState<number>(250);
     const [canvasHeight, setCanvasHeight] = useState<number>(122);
@@ -276,8 +317,50 @@ const TemplateEditor: React.FC = () => {
     const [showAboutDialog, setShowAboutDialog] = useState<boolean>(false);
     const [showEslConfigDialog, setShowEslConfigDialog] = useState<boolean>(false);
     
+    // File browser dialog state
+    const [showFileBrowserDialog, setShowFileBrowserDialog] = useState<boolean>(false);
+    const [availableFolders, setAvailableFolders] = useState<string[]>([]);
+    const [selectedFolder, setSelectedFolder] = useState<string>('');
+    const [availableFiles, setAvailableFiles] = useState<string[]>([]);
+    const [browserLoading, setBrowserLoading] = useState<boolean>(false);
+    
+    // Save dialog state
+    const [showSaveDialog, setShowSaveDialog] = useState<boolean>(false);
+    const [saveFolders, setSaveFolders] = useState<string[]>([]);
+    const [saveSelectedFolder, setSaveSelectedFolder] = useState<string>('');
+    const [saveFilename, setSaveFilename] = useState<string>('');
+    const [saveLoading, setSaveLoading] = useState<boolean>(false);
+    
+    // Image browser dialog state
+    const [showImageBrowserDialog, setShowImageBrowserDialog] = useState<boolean>(false);
+    const [availableImages, setAvailableImages] = useState<string[]>([]);
+    const [selectedImage, setSelectedImage] = useState<string>('');
+    const [imageBrowserLoading, setImageBrowserLoading] = useState<boolean>(false);
+    
+    // Preview dialog state
+    const [showPreviewDialog, setShowPreviewDialog] = useState<boolean>(false);
+    const [previewImageUrl, setPreviewImageUrl] = useState<string>('');
+    const [previewZoom, setPreviewZoom] = useState<number>(1);
+    const [previewCaseColor, setPreviewCaseColor] = useState<'black' | 'white'>('white');
+    const [previewDialogSize, setPreviewDialogSize] = useState({ width: 800, height: 600 });
+    const [isResizingPreview, setIsResizingPreview] = useState(false);
+    const [resizeStartPos, setResizeStartPos] = useState({ x: 0, y: 0 });
+    const [resizeStartSize, setResizeStartSize] = useState({ width: 0, height: 0 });
+    
+    // Helper function to get minimum zoom based on canvas size
+    const getMinimumZoom = useCallback(() => {
+        // For sizes larger than 296x128, allow zoom down to 25%
+        // For 296x128 or smaller, minimum is 90%
+        if (canvasWidth > 296 || canvasHeight > 128) {
+            return 0.25;
+        }
+        return 0.9;
+    }, [canvasWidth, canvasHeight]);
+    
     // Zoom controls drag state
-    const [zoomControlsPosition, setZoomControlsPosition] = useState({ x: 20, y: 20 }); // x from right, y from bottom
+    // Position in canvas area: properties panel is ~300px wide, so start at 350px from left
+    // This ensures zoom controls appear in the canvas area (right side) by default
+    const [zoomControlsPosition, setZoomControlsPosition] = useState({ x: 350, y: 40 }); // x from left, y from bottom
     const [isDraggingZoomControls, setIsDraggingZoomControls] = useState(false);
     const [zoomDragStart, setZoomDragStart] = useState({ x: 0, y: 0 });
     
@@ -300,15 +383,9 @@ const TemplateEditor: React.FC = () => {
         let constrainedHeight = elementHeight;
         
         if (item.type === 'text') {
-            // For text: constrain so the RIGHT EDGE of text doesn't exceed canvas boundary
-            const textWidth = estimateTextWidth(item.text, item.fontSize, (item as TextItem).fontFamily);
-            const textHeight = item.fontSize * 0.8;
-            
-            // Constrain X: only left boundary - allow text to extend beyond right edge
-            constrainedX = Math.max(0, newX);
-            
-            // Constrain Y: allow minimum of 0 (top edge) and within canvas height
-            constrainedY = Math.max(0, Math.min(canvasHeight, newY));
+            // For text: no constraints - allow text to be positioned anywhere, even beyond canvas
+            constrainedX = newX;
+            constrainedY = newY;
             
         } else if (item.type === 'circle') {
             // Circles: x,y is center, constrain by radius
@@ -385,7 +462,7 @@ const TemplateEditor: React.FC = () => {
     }, []);
 
     // Zoom state
-    const [zoomLevel, setZoomLevel] = useState<number>(1);
+    const [zoomLevel, setZoomLevel] = useState<number>(2);
     const zoomLevels = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
 
     // Font size input state (for delayed updates)
@@ -408,6 +485,67 @@ const TemplateEditor: React.FC = () => {
             }
         }
     }, [fontSizeInput, selectedIds, isFontSizeEditing]);
+
+    // Force re-render of resize handles when text elements are mounted or canvas items change
+    useEffect(() => {
+        // Small delay to ensure text elements are rendered and refs are set
+        const timer = setTimeout(() => {
+            forceUpdate({});
+        }, 50);
+        return () => clearTimeout(timer);
+    }, [canvasItems, selectedIds]);
+
+    // Handle preview dialog resize
+    useEffect(() => {
+        if (!isResizingPreview) {
+            // Re-enable text selection when not resizing
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+            return;
+        }
+
+        // Disable text selection during resize
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'nwse-resize';
+
+        const handleMouseMove = (e: MouseEvent) => {
+            e.preventDefault();
+            
+            const deltaX = e.clientX - resizeStartPos.x;
+            const deltaY = e.clientY - resizeStartPos.y;
+            
+            // Simple fixed minimum size - enforce strict minimum
+            const minWidth = 300;
+            const minHeight = 300;
+            
+            const newWidth = resizeStartSize.width + deltaX;
+            const newHeight = resizeStartSize.height + deltaY;
+            
+            setPreviewDialogSize({
+                width: newWidth < minWidth ? minWidth : newWidth,
+                height: newHeight < minHeight ? minHeight : newHeight
+            });
+        };
+
+        const handleMouseUp = (e: MouseEvent) => {
+            e.preventDefault();
+            setIsResizingPreview(false);
+            // Reset cursor and selection
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+        };
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+
+        return () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+            // Ensure cleanup
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+        };
+    }, [isResizingPreview, resizeStartPos, resizeStartSize]);
 
     // Delete selected item function - now handles multiple selections
     const deleteSelectedItem = useCallback(() => {
@@ -556,14 +694,6 @@ const TemplateEditor: React.FC = () => {
                         >
                             Delete {selectedIds.length} Elements
                         </button>
-                    </div>
-                    
-                    {/* Keyboard Controls Help */}
-                    <div style={{ marginTop: '15px', padding: '8px', backgroundColor: '#f8f9fa', borderRadius: '3px', fontSize: '10px', color: '#666' }}>
-                        <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>Keyboard Controls:</div>
-                        <div>• Delete/Backspace: Remove elements</div>
-                        <div>• Ctrl/Cmd + Click: Add/remove from selection</div>
-                        <div>• Click + Drag on canvas: Select multiple</div>
                     </div>
                 </div>
             );
@@ -1360,6 +1490,75 @@ const TemplateEditor: React.FC = () => {
                     </>
                 )}
 
+                {/* Image Properties */}
+                {selectedItem.type === 'image' && (
+                    <>
+                        {/* Width Control */}
+                        <div style={{ marginBottom: '15px' }}>
+                            <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', fontWeight: 'bold', color: '#333' }}>
+                                Width:
+                            </label>
+                            <input 
+                                type="number" 
+                                step="1"
+                                min="1"
+                                value={(selectedItem as ImageItem).width}
+                                onChange={(e) => {
+                                    const newWidth = parseInt(e.target.value) || 1;
+                                    setCanvasItems(items =>
+                                        items.map(item => {
+                                            if (selectedIds.includes(item.id) && item.type === 'image') {
+                                                const constrained = constrainToCanvas(item, item.x, item.y, newWidth, item.height);
+                                                return { ...item, width: constrained.width || newWidth };
+                                            }
+                                            return item;
+                                        })
+                                    );
+                                }}
+                                style={{ 
+                                    width: '100%', 
+                                    padding: '4px 6px', 
+                                    fontSize: '12px',
+                                    border: '1px solid #ddd',
+                                    borderRadius: '3px'
+                                }}
+                            />
+                        </div>
+
+                        {/* Height Control */}
+                        <div style={{ marginBottom: '15px' }}>
+                            <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', fontWeight: 'bold', color: '#333' }}>
+                                Height:
+                            </label>
+                            <input 
+                                type="number" 
+                                step="1"
+                                min="1"
+                                value={(selectedItem as ImageItem).height}
+                                onChange={(e) => {
+                                    const newHeight = parseInt(e.target.value) || 1;
+                                    setCanvasItems(items =>
+                                        items.map(item => {
+                                            if (selectedIds.includes(item.id) && item.type === 'image') {
+                                                const constrained = constrainToCanvas(item, item.x, item.y, item.width, newHeight);
+                                                return { ...item, height: constrained.height || newHeight };
+                                            }
+                                            return item;
+                                        })
+                                    );
+                                }}
+                                style={{ 
+                                    width: '100%', 
+                                    padding: '4px 6px', 
+                                    fontSize: '12px',
+                                    border: '1px solid #ddd',
+                                    borderRadius: '3px'
+                                }}
+                            />
+                        </div>
+                    </>
+                )}
+
                 {/* Barcode Properties */}
                 {selectedItem.type === 'barcode' && (
                     <>
@@ -1539,17 +1738,6 @@ const TemplateEditor: React.FC = () => {
                         Delete Element
                     </button>
                 </div>
-
-                {/* Keyboard Controls Help */}
-                <div style={{ marginTop: '15px', padding: '8px', backgroundColor: '#f8f9fa', borderRadius: '3px', fontSize: '10px', color: '#666' }}>
-                    <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>Keyboard Controls:</div>
-                    <div>• Arrow keys: Move element (1px)</div>
-                    <div>• Shift + Arrow keys: Move element (10px)</div>
-                    <div>• Delete/Backspace: Remove element</div>
-                    <div>• Ctrl/Cmd + Plus: Zoom in</div>
-                    <div>• Ctrl/Cmd + Minus: Zoom out</div>
-                    <div>• Ctrl/Cmd + 0: Reset zoom</div>
-                </div>
             </div>
         );
     }, [selectedIds, canvasItems, canvasWidth, canvasHeight, deleteSelectedItem, isFontSizeEditing, fontSizeInput, handleFontSizeInputFocus, handleFontSizeInputChange, handleFontSizeInputBlur, handleFontSizeKeyDown]);
@@ -1672,6 +1860,13 @@ const TemplateEditor: React.FC = () => {
                                 {...getElementButtonHandlers()}
                             >
                                 QR Code
+                            </button>
+                            <button 
+                                onClick={() => openImageBrowser()}
+                                style={getElementButtonStyle()}
+                                {...getElementButtonHandlers()}
+                            >
+                                Image
                             </button>
                         </div>
                     </div>
@@ -2090,7 +2285,7 @@ const TemplateEditor: React.FC = () => {
         if (selectedIds.length !== 1) return;
         
         const item = canvasItems.find(i => i.id === selectedIds[0]);
-        if (!item || (item.type !== 'rect' && item.type !== 'text' && item.type !== 'line')) return; // Rectangles, text, and lines can be resized
+        if (!item || (item.type !== 'rect' && item.type !== 'text' && item.type !== 'line' && item.type !== 'image')) return; // Rectangles, text, lines, and images can be resized
         
         setResizing(true);
         setResizeHandle(handle);
@@ -2118,6 +2313,14 @@ const TemplateEditor: React.FC = () => {
                 width: item.x2,
                 height: item.y2
             });
+        } else if (item.type === 'image') {
+            // For images, store position and dimensions like rectangles
+            setResizeStart({
+                x: item.x,
+                y: item.y,
+                width: item.width,
+                height: item.height
+            });
         }
     }, [selectedIds, canvasItems]);
 
@@ -2131,7 +2334,7 @@ const TemplateEditor: React.FC = () => {
             
             setCanvasItems(items =>
                 items.map(item => {
-                    if (!selectedIds.includes(item.id) || (item.type !== 'rect' && item.type !== 'text' && item.type !== 'line')) return item;
+                    if (!selectedIds.includes(item.id) || (item.type !== 'rect' && item.type !== 'text' && item.type !== 'line' && item.type !== 'image')) return item;
                     
                     if (item.type === 'rect') {
                         let newX = item.x;
@@ -2324,6 +2527,78 @@ const TemplateEditor: React.FC = () => {
                             x2: Math.round(constrainedX2),
                             y2: Math.round(constrainedY2)
                         };
+                    } else if (item.type === 'image') {
+                        // For images, resize similar to rectangles
+                        let newX = item.x;
+                        let newY = item.y;
+                        let newWidth = item.width;
+                        let newHeight = item.height;
+                        
+                        switch (resizeHandle) {
+                            case 'nw': // Northwest
+                                newWidth = resizeStart.width + (resizeStart.x - mouseX);
+                                newHeight = resizeStart.height + (resizeStart.y - mouseY);
+                                newX = resizeStart.x + resizeStart.width - newWidth;
+                                newY = resizeStart.y + resizeStart.height - newHeight;
+                                break;
+                            case 'ne': // Northeast
+                                newWidth = mouseX - resizeStart.x;
+                                newHeight = resizeStart.height + (resizeStart.y - mouseY);
+                                newX = resizeStart.x;
+                                newY = resizeStart.y + resizeStart.height - newHeight;
+                                break;
+                            case 'sw': // Southwest
+                                newWidth = resizeStart.width + (resizeStart.x - mouseX);
+                                newHeight = mouseY - resizeStart.y;
+                                newX = resizeStart.x + resizeStart.width - newWidth;
+                                newY = resizeStart.y;
+                                break;
+                            case 'se': // Southeast
+                                newWidth = mouseX - resizeStart.x;
+                                newHeight = mouseY - resizeStart.y;
+                                newX = resizeStart.x;
+                                newY = resizeStart.y;
+                                break;
+                            case 'n': // North
+                                newHeight = resizeStart.height + (resizeStart.y - mouseY);
+                                newY = resizeStart.y + resizeStart.height - newHeight;
+                                break;
+                            case 's': // South
+                                newHeight = mouseY - resizeStart.y;
+                                break;
+                            case 'e': // East
+                                newWidth = mouseX - resizeStart.x;
+                                break;
+                            case 'w': // West
+                                newWidth = resizeStart.width + (resizeStart.x - mouseX);
+                                newX = resizeStart.x + resizeStart.width - newWidth;
+                                break;
+                        }
+                        
+                        // Handle negative dimensions by flipping
+                        if (newWidth < 0) {
+                            newX = newX + newWidth;
+                            newWidth = Math.abs(newWidth);
+                        }
+                        if (newHeight < 0) {
+                            newY = newY + newHeight;
+                            newHeight = Math.abs(newHeight);
+                        }
+                        
+                        // Ensure minimum size
+                        newWidth = Math.max(10, newWidth);
+                        newHeight = Math.max(10, newHeight);
+                        
+                        // Apply canvas boundary constraints
+                        const constrained = constrainToCanvas(item, newX, newY, newWidth, newHeight);
+                        
+                        return {
+                            ...item,
+                            x: Math.round(constrained.x),
+                            y: Math.round(constrained.y),
+                            width: Math.round(constrained.width || newWidth),
+                            height: Math.round(constrained.height || newHeight)
+                        };
                     }
                     
                     return item;
@@ -2422,6 +2697,11 @@ const TemplateEditor: React.FC = () => {
             setCanvasItems(prevItems =>
                 prevItems.map(item => {
                     if (selectedIds.includes(item.id)) {
+                        // For text elements, allow unrestricted movement beyond canvas
+                        if (item.type === 'text') {
+                            return { ...item, x: item.x + deltaX, y: item.y + deltaY };
+                        }
+                        // For other elements, constrain within canvas bounds
                         const newX = Math.max(0, Math.min(canvasWidth - 10, item.x + deltaX));
                         const newY = Math.max(0, Math.min(canvasHeight - 10, item.y + deltaY));
                         return { ...item, x: newX, y: newY };
@@ -2441,7 +2721,7 @@ const TemplateEditor: React.FC = () => {
     }, [handleKeyDown]);
 
     // Render resize handles for selected rectangle, text, or line
-    const renderResizeHandles = useCallback((item: RectItem | TextItem | LineItem) => {
+    const renderResizeHandles = useCallback((item: RectItem | TextItem | LineItem | ImageItem) => {
         let handleSize = 8; // Default handle size for rectangles
         let handles: Array<{ id: string; x: number; y: number; cursor: string }> = [];
         
@@ -2457,19 +2737,45 @@ const TemplateEditor: React.FC = () => {
                 { id: 'e', x: item.x + item.width - handleSize/2, y: item.y + item.height/2 - handleSize/2, cursor: 'e-resize' }
             ];
         } else if (item.type === 'text') {
-            // For text, find the sweet spot that properly surrounds the text
-            const estimatedWidth = estimateTextWidth(item.text, item.fontSize, (item as TextItem).fontFamily);
-            const estimatedHeight = item.fontSize; // Use fontSize as the height
+            // For text, calculate exact dimensions matching the rendering logic
+            const text = String(item.text || '');
+            const lines = text.split('\n');
+            const lineHeight = item.fontSize * 1.2;
+            
+            // Try to get actual rendered dimensions from ref
+            const textElement = textElementRefs.current.get(item.id);
+            let textLeft, textRight, textTop, textBottom;
+            
+            // Calculate anchored position for top edge reference
+            const estimatedWidth = estimateTextWidth(text, item.fontSize, (item as TextItem).fontFamily);
+            const estimatedHeight = lines.length * lineHeight;
+            const anchoredPos = calculateAnchoredPosition(item as TextItem, estimatedWidth, estimatedHeight);
+            
+            if (textElement) {
+                try {
+                    const bbox = textElement.getBBox();
+                    textLeft = bbox.x;
+                    textRight = bbox.x + bbox.width;
+                    // Use the actual y position from anchored calculation for top (with dominantBaseline="hanging")
+                    textTop = anchoredPos.y;
+                    textBottom = bbox.y + bbox.height;
+                } catch (e) {
+                    // Fallback to estimation if getBBox fails
+                    textLeft = anchoredPos.x;
+                    textRight = anchoredPos.x + estimatedWidth;
+                    textTop = anchoredPos.y;
+                    textBottom = anchoredPos.y + estimatedHeight;
+                }
+            } else {
+                // Fallback to estimation if ref not available
+                textLeft = anchoredPos.x;
+                textRight = anchoredPos.x + estimatedWidth;
+                textTop = anchoredPos.y;
+                textBottom = anchoredPos.y + estimatedHeight;
+            }
             
             // Make handles slightly larger and proportional to text height
             handleSize = Math.max(4, Math.min(item.fontSize * 0.25, 10));
-            
-            // Position handles exactly at the text boundaries
-            // item.y is the top edge, text baseline is at item.y + fontSize
-            const textTop = item.y; // Top edge of text at item.y
-            const textBottom = item.y + estimatedHeight; // Bottom edge
-            const textLeft = item.x; // Exact left edge of text
-            const textRight = item.x + estimatedWidth; // Exact right edge of text
             
             handles = [
                 { id: 'nw', x: textLeft - handleSize/2, y: textTop - handleSize/2, cursor: 'nw-resize' },
@@ -2484,6 +2790,18 @@ const TemplateEditor: React.FC = () => {
             handles = [
                 { id: 'start', x: item.x - handleSize/2, y: item.y - handleSize/2, cursor: 'move' },
                 { id: 'end', x: item.x2 - handleSize/2, y: item.y2 - handleSize/2, cursor: 'move' }
+            ];
+        } else if (item.type === 'image') {
+            // For images, use same handles as rectangles
+            handles = [
+                { id: 'nw', x: item.x - handleSize/2, y: item.y - handleSize/2, cursor: 'nw-resize' },
+                { id: 'ne', x: item.x + item.width - handleSize/2, y: item.y - handleSize/2, cursor: 'ne-resize' },
+                { id: 'sw', x: item.x - handleSize/2, y: item.y + item.height - handleSize/2, cursor: 'sw-resize' },
+                { id: 'se', x: item.x + item.width - handleSize/2, y: item.y + item.height - handleSize/2, cursor: 'se-resize' },
+                { id: 'n', x: item.x + item.width/2 - handleSize/2, y: item.y - handleSize/2, cursor: 'n-resize' },
+                { id: 's', x: item.x + item.width/2 - handleSize/2, y: item.y + item.height - handleSize/2, cursor: 's-resize' },
+                { id: 'w', x: item.x - handleSize/2, y: item.y + item.height/2 - handleSize/2, cursor: 'w-resize' },
+                { id: 'e', x: item.x + item.width - handleSize/2, y: item.y + item.height/2 - handleSize/2, cursor: 'e-resize' }
             ];
         }
 
@@ -2501,7 +2819,7 @@ const TemplateEditor: React.FC = () => {
                 onMouseDown={(e) => handleResizeMouseDown(e, handle.id)}
             />
         ));
-    }, [handleResizeMouseDown, estimateTextWidth]);
+    }, [handleResizeMouseDown, estimateTextWidth, calculateAnchoredPosition]);
 
     const addElement = useCallback((type: string) => {
         setCanvasItems(prevItems => {
@@ -2527,6 +2845,9 @@ const TemplateEditor: React.FC = () => {
                     break;
                 case 'qrcode':
                     newItem = { id: newId, type: 'qrcode', x: 50, y: 50, size: 50, data: 'https://example.com', color: '#000000', zIndex: newZIndex };
+                    break;
+                case 'image':
+                    newItem = { id: newId, type: 'image', x: 50, y: 50, width: 100, height: 100, filename: '', originalFilename: '', color: '#000000', zIndex: newZIndex };
                     break;
                 default:
                     return prevItems;
@@ -2584,6 +2905,175 @@ const TemplateEditor: React.FC = () => {
             });
         });
     }, []);
+
+    // Generate YAML content as a string (helper function for both export and save)
+    const generateYAMLContent = useCallback(async (): Promise<string> => {
+        const colorToFill = (color: string) => {
+            switch (color.toLowerCase()) {
+                case '#000000':
+                case '#000':
+                case 'black':
+                    return 0;
+                case '#ffffff':
+                case '#fff':
+                case 'white':
+                    return 1;
+                case '#ffff00':
+                case '#ff0':
+                case 'yellow':
+                    return 2;
+                case '#ff0000':
+                case '#f00':
+                case 'red':
+                    return 3;
+                default:
+                    return 0;
+            }
+        };
+
+        const usedFontCombinations = new Set<string>();
+        const textElements = canvasItems.filter(item => item.type === 'text') as TextItem[];
+        
+        textElements.forEach(item => {
+            const fontFamily = item.fontFamily || availableFonts[0].value;
+            const combinationKey = `${fontFamily}|${item.fontSize}`;
+            usedFontCombinations.add(combinationKey);
+        });
+
+        const defaultCombination = `${availableFonts[0].value}|16`;
+        if (!usedFontCombinations.has(defaultCombination)) {
+            usedFontCombinations.add(defaultCombination);
+        }
+
+        const fonts: string[] = [];
+        const fontCombinationToIndex = new Map<string, number>();
+        let fontIndex = 0;
+
+        usedFontCombinations.forEach(combination => {
+            const [fontFamily, fontSize] = combination.split('|');
+            const eslFontName = getEslFontFromWebFont(fontFamily);
+            fonts.push(`${eslFontName}:${fontSize}`);
+            fontCombinationToIndex.set(combination, fontIndex++);
+        });
+
+        const defaultFontIndex = fontCombinationToIndex.get(defaultCombination) || 0;
+
+        const yamlData: any = {
+            fontbase: 'fonts/',
+            fonts: fonts,
+            type: eslType,
+            x_res: canvasWidth,
+            y_res: canvasHeight,
+            axis: eslAxis,
+            el: [] as any[]
+        };
+
+        canvasItems.forEach((item, index) => {
+            if (item.type === 'text') {
+                const safeText = String(item.text || '');
+                const bracketMatch = safeText.match(/^\[(.+)\]$/);
+                
+                const varName = bracketMatch ? bracketMatch[1] : undefined;
+                const textValue = bracketMatch ? undefined : safeText;
+                
+                const fontFamily = (item as TextItem).fontFamily || availableFonts[0].value;
+                const combinationKey = `${fontFamily}|${item.fontSize}`;
+                const fontIdx = fontCombinationToIndex.get(combinationKey) || defaultFontIndex;
+                
+                const element: any = {
+                    type: 'text',
+                    font: fontIdx,
+                    fill: colorToFill(item.color),
+                    anchor: (item as TextItem).anchor || 'lt',
+                    x: item.x,
+                    y: item.y
+                };
+                
+                if (varName) {
+                    element.var = varName;
+                } else if (textValue !== undefined) {
+                    element.text = textValue;
+                }
+                
+                yamlData.el.push(element);
+            } else if (item.type === 'rect') {
+                const element: any = {
+                    type: 'rect',
+                    fill: colorToFill(item.color),
+                    x1: item.x,
+                    y1: item.y,
+                    x2: item.x + item.width,
+                    y2: item.y + item.height
+                };
+                yamlData.el.push(element);
+            } else if (item.type === 'line') {
+                const element: any = {
+                    type: 'line',
+                    fill: colorToFill(item.color),
+                    x1: item.x,
+                    y1: item.y,
+                    x2: (item as LineItem).x2,
+                    y2: (item as LineItem).y2
+                };
+                yamlData.el.push(element);
+            } else if (item.type === 'circle') {
+                const element: any = {
+                    type: 'circle',
+                    fill: colorToFill(item.color),
+                    x: item.x,
+                    y: item.y,
+                    r: (item as CircleItem).radius
+                };
+                yamlData.el.push(element);
+            } else if (item.type === 'image') {
+                const element: any = {
+                    type: 'img',
+                    filename: (item as ImageItem).filename || 'image.bmp',
+                    size_x: item.width,
+                    size_y: item.height,
+                    x_pos: item.x,
+                    y_pos: item.y
+                };
+                yamlData.el.push(element);
+            } else if (item.type === 'barcode') {
+                const safeData = String((item as BarcodeItem).data || '');
+                const bracketMatch = safeData.match(/^\[(.+)\]$/);
+                const varName = bracketMatch ? bracketMatch[1] : 'barcode';
+                
+                const element: any = {
+                    type: 'code128',
+                    var: varName,
+                    x: item.x,
+                    y: item.y,
+                    height: item.height,
+                    font: defaultFontIndex,
+                    font_size: 3,
+                    quiet_zone: 0,
+                    write_text: true,
+                    text_distance: -1
+                };
+                yamlData.el.push(element);
+            } else if (item.type === 'qrcode') {
+                const safeData = String((item as QRCodeItem).data || '');
+                const bracketMatch = safeData.match(/^\[(.+)\]$/);
+                const varName = bracketMatch ? bracketMatch[1] : 'qrdata';
+                
+                const element: any = {
+                    type: 'qrcode',
+                    var: varName,
+                    x: item.x,
+                    y: item.y,
+                    scale: 1
+                };
+                yamlData.el.push(element);
+            }
+        });
+
+        const yaml = await import('yaml');
+        const yamlString = yaml.stringify(yamlData);
+
+        return yamlString;
+    }, [canvasItems, canvasWidth, canvasHeight, eslType, eslAxis]);
 
     // YAML Export function based on ESL template structure
     const exportToYAML = useCallback(async () => {
@@ -2745,6 +3235,68 @@ const TemplateEditor: React.FC = () => {
                     y2: y2
                 };
                 yamlData.el.push(element);
+            } else if (item.type === 'barcode') {
+                // Check if data contains brackets indicating a variable
+                const safeData = String(item.data || '');
+                const bracketMatch = safeData.match(/^\[(.+)\]$/);
+                
+                const varName = bracketMatch ? bracketMatch[1] : 'gtin';
+                
+                // Convert barcode to ESL barcode element
+                const element: any = {
+                    type: 'barcode',
+                    variant: 'code128',
+                    width: 0.1,
+                    height: 1,
+                    var: varName,
+                    x: item.x,
+                    y: item.y,
+                    scale: 1,
+                    font_size: 3,
+                    quiet_zone: 0,
+                    write_text: true,
+                    text_distance: -1
+                };
+                yamlData.el.push(element);
+            } else if (item.type === 'qrcode') {
+                // Check if data contains brackets indicating a variable
+                const safeData = String(item.data || '');
+                const bracketMatch = safeData.match(/^\[(.+)\]$/);
+                
+                const varName = bracketMatch ? bracketMatch[1] : 'qrdata';
+                
+                // Convert QR code to ESL qrcode element
+                const element: any = {
+                    type: 'qrcode',
+                    var: varName,
+                    x: item.x,
+                    y: item.y,
+                    scale: 1
+                };
+                yamlData.el.push(element);
+            } else if (item.type === 'image') {
+                // Convert image to ESL image element
+                // Use originalFilename if available, otherwise generate a filename
+                let filename = (item as ImageItem).originalFilename || item.filename;
+                
+                // If filename is still a data URL, generate a default filename
+                if (filename.startsWith('data:')) {
+                    const extension = filename.includes('image/png') ? '.png' : '.bmp';
+                    filename = `image_${item.width}x${item.height}${extension}`;
+                }
+                
+                const element: any = {
+                    type: 'image',
+                    fill: 0,
+                    filename: filename,
+                    size_x: item.width,
+                    size_y: item.height,
+                    x_pos: item.x,
+                    y_pos: item.y
+                };
+                
+                console.log('Exporting image element:', element); // Debug log
+                yamlData.el.push(element);
             }
         });
 
@@ -2754,10 +3306,11 @@ const TemplateEditor: React.FC = () => {
         // Use File System Access API if available (Chrome/Edge), otherwise fallback to download
         if ('showSaveFilePicker' in window) {
             try {
-                // Show native save dialog
+                // Show native save dialog starting in templates directory
                 const defaultFilename = templateFilename === 'New template' ? 'esl-template' : templateFilename;
                 const handle = await (window as any).showSaveFilePicker({
                     suggestedName: `${defaultFilename}.yaml`,
+                    startIn: 'documents', // Start in documents folder (closest to templates)
                     types: [{
                         description: 'YAML Files',
                         accept: { 'text/yaml': ['.yaml', '.yml'] }
@@ -2829,7 +3382,7 @@ const TemplateEditor: React.FC = () => {
     }, [canvasItems, canvasWidth, canvasHeight, templateFilename, lastSavedFilename, eslType, eslAxis]);
 
     // Export to JPG function with pixel-accurate rendering
-    const exportToJPG = useCallback(() => {
+    const exportToJPG = useCallback(async () => {
         // Create a canvas for rendering
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
@@ -2870,6 +3423,29 @@ const TemplateEditor: React.FC = () => {
                     return '#000000';
             }
         };
+
+        // Load all images first
+        const imageElements: Map<number, HTMLImageElement> = new Map();
+        const imagePromises = canvasItems
+            .filter(item => item.type === 'image' && item.filename)
+            .map(item => {
+                return new Promise<void>((resolve, reject) => {
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous'; // Allow cross-origin if needed
+                    img.onload = () => {
+                        imageElements.set(item.id, img);
+                        resolve();
+                    };
+                    img.onerror = () => {
+                        console.error(`Failed to load image: ${(item as ImageItem).filename}`);
+                        resolve(); // Continue even if image fails to load
+                    };
+                    img.src = `/api/get-image?filename=${encodeURIComponent((item as ImageItem).filename)}`;
+                });
+            });
+
+        // Wait for all images to load
+        await Promise.all(imagePromises);
         
         // Render each element
         canvasItems.forEach((item) => {
@@ -2986,6 +3562,18 @@ const TemplateEditor: React.FC = () => {
                         }
                     }
                 }
+            } else if (item.type === 'image') {
+                // Render image
+                const img = imageElements.get(item.id);
+                if (img) {
+                    ctx.drawImage(
+                        img,
+                        Math.round(item.x),
+                        Math.round(item.y),
+                        Math.round(item.width),
+                        Math.round(item.height)
+                    );
+                }
             }
         });
         
@@ -3037,19 +3625,31 @@ const TemplateEditor: React.FC = () => {
         // Put the quantized data back
         ctx.putImageData(imageData, 0, 0);
         
-        // Convert to JPG and download
-        canvas.toBlob((blob) => {
-            if (blob) {
-                const url = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = 'esl-template.jpg';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(url);
-            }
-        }, 'image/jpeg', 1.0); // Maximum quality
+        // Convert to data URL and show in dialog
+        const dataUrl = canvas.toDataURL('image/jpeg', 1.0);
+        setPreviewImageUrl(dataUrl);
+        
+        // Set initial zoom based on canvas size
+        // For sizes larger than 296x128, start at 50% or lower
+        // For 296x128 or smaller, start at 100%
+        let initialZoom = 1;
+        if (canvasWidth > 296 || canvasHeight > 128) {
+            // Calculate zoom to fit in viewport
+            // Assuming a reasonable preview area of ~800px wide and ~600px tall
+            const zoomToFitWidth = 800 / canvasWidth;
+            const zoomToFitHeight = 600 / canvasHeight;
+            const zoomToFit = Math.min(zoomToFitWidth, zoomToFitHeight);
+            // Use the smaller of 50% or zoom-to-fit
+            initialZoom = Math.min(0.5, zoomToFit);
+        }
+        setPreviewZoom(initialZoom);
+        
+        // Set initial dialog size based on content
+        const dialogWidth = Math.min(Math.max(800, canvasWidth * initialZoom + 200), window.innerWidth * 0.9);
+        const dialogHeight = Math.min(Math.max(600, canvasHeight * initialZoom + 250), window.innerHeight * 0.9);
+        setPreviewDialogSize({ width: dialogWidth, height: dialogHeight });
+        
+        setShowPreviewDialog(true);
     }, [canvasItems, canvasWidth, canvasHeight]);
 
     // Clear canvas function
@@ -3062,148 +3662,391 @@ const TemplateEditor: React.FC = () => {
         }
     }, []);
 
+    // Fetch folders from server path
+    const fetchAvailableFolders = useCallback(async () => {
+        setBrowserLoading(true);
+        try {
+            // Use a Node.js child process to list directories
+            const response = await fetch('/api/list-folders', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    path: '/opt/esl/tag_image_gen/tag_image_templates/label_templates/bwry/' 
+                }),
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                setAvailableFolders(data.folders || []);
+            } else {
+                // Fallback: try to simulate with mock data for development
+                console.warn('Could not fetch server folders, using fallback');
+                setAvailableFolders(['template1', 'template2', 'template3', 'custom_template']);
+            }
+        } catch (error) {
+            console.error('Error fetching folders:', error);
+            // Fallback: provide some example folders
+            setAvailableFolders(['template1', 'template2', 'template3', 'custom_template']);
+        } finally {
+            setBrowserLoading(false);
+        }
+    }, []);
+
+    // Fetch files from selected folder
+    const fetchFilesInFolder = useCallback(async (folderName: string) => {
+        setBrowserLoading(true);
+        try {
+            const response = await fetch('/api/list-files', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    path: `/opt/esl/tag_image_gen/tag_image_templates/label_templates/bwry/${folderName}` 
+                }),
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                setAvailableFiles(data.files || []);
+            } else {
+                // Fallback: simulate with mock files
+                setAvailableFiles(['template.yaml', 'config.yml']);
+            }
+        } catch (error) {
+            console.error('Error fetching files:', error);
+            setAvailableFiles(['template.yaml', 'config.yml']);
+        } finally {
+            setBrowserLoading(false);
+        }
+    }, []);
+
+    // Open custom file browser dialog
+    const openFileBrowser = useCallback(() => {
+        setShowFileBrowserDialog(true);
+        setSelectedFolder('');
+        setAvailableFiles([]);
+        fetchAvailableFolders();
+    }, [fetchAvailableFolders]);
+
+    // Open save dialog
+    const openSaveDialog = useCallback(async () => {
+        setShowSaveDialog(true);
+        setSaveSelectedFolder('');
+        setSaveFilename(templateFilename.replace(/\.ya?ml$/i, '') || 'template');
+        
+        // Fetch available folders for saving
+        try {
+            const response = await fetch('/api/list-folders', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    path: '/opt/esl/tag_image_gen/tag_image_templates/label_templates/bwry/' 
+                }),
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                setSaveFolders(data.folders || []);
+            }
+        } catch (error) {
+            console.error('Error fetching folders:', error);
+        }
+    }, [templateFilename]);
+
+    // Save template to server
+    const saveTemplateToServer = useCallback(async () => {
+        if (!saveSelectedFolder || !saveFilename) {
+            alert('Please select a folder and enter a filename');
+            return;
+        }
+
+        setSaveLoading(true);
+        
+        try {
+            // Generate YAML content (reuse exportToYAML logic but get the content)
+            const yamlContent = await generateYAMLContent();
+            
+            // Ensure filename ends with .yml
+            const filename = saveFilename.endsWith('.yml') || saveFilename.endsWith('.yaml') 
+                ? saveFilename 
+                : `${saveFilename}.yml`;
+            
+            const folderPath = `/opt/esl/tag_image_gen/tag_image_templates/label_templates/bwry/${saveSelectedFolder}`;
+            
+            const response = await fetch('/api/save-template', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    folderPath,
+                    filename,
+                    content: yamlContent
+                }),
+            });
+            
+            if (response.ok) {
+                alert(`Template saved successfully to ${saveSelectedFolder}/${filename}`);
+                setShowSaveDialog(false);
+                setTemplateFilename(filename);
+                setLastSavedFilename(filename);
+            } else {
+                const data = await response.json();
+                const errorMsg = data.details 
+                    ? `${data.error}\n\n${data.details}` 
+                    : (data.error || 'Unknown error');
+                alert(`Failed to save template:\n${errorMsg}`);
+            }
+        } catch (error) {
+            console.error('Error saving template:', error);
+            alert(`Failed to save template: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        } finally {
+            setSaveLoading(false);
+        }
+    }, [saveSelectedFolder, saveFilename]);
+
+    // Open image browser dialog
+    const openImageBrowser = useCallback(async () => {
+        setShowImageBrowserDialog(true);
+        setSelectedImage('');
+        setImageBrowserLoading(true);
+        
+        try {
+            const response = await fetch('/api/list-images', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    path: '/opt/esl/tag_image_gen/images' 
+                }),
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                setAvailableImages(data.files || []);
+            } else {
+                console.error('Failed to load images');
+                setAvailableImages([]);
+            }
+        } catch (error) {
+            console.error('Error fetching images:', error);
+            setAvailableImages([]);
+        } finally {
+            setImageBrowserLoading(false);
+        }
+    }, []);
+
+    // Add selected image to canvas
+    const addImageFromBrowser = useCallback(() => {
+        console.log('addImageFromBrowser called, selectedImage:', selectedImage);
+        
+        if (!selectedImage) {
+            alert('Please select an image');
+            return;
+        }
+
+        setCanvasItems(prevItems => {
+            const newId = prevItems.length > 0 ? Math.max(...prevItems.map(item => item.id)) + 1 : 1;
+            const newZIndex = prevItems.length > 0 ? Math.max(...prevItems.map(item => item.zIndex || 0)) + 1 : 0;
+            
+            const newItem: ImageItem = {
+                id: newId,
+                type: 'image',
+                x: 50,
+                y: 50,
+                width: 100,
+                height: 100,
+                color: '#000000',
+                zIndex: newZIndex,
+                filename: selectedImage
+            };
+            
+            console.log('Adding new image item:', newItem);
+            return [...prevItems, newItem];
+        });
+        
+        setShowImageBrowserDialog(false);
+        setSelectedImage('');
+    }, [selectedImage]);
+
     // Import YAML template function
     const importTemplate = useCallback(() => {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.yaml,.yml';
-        
-        input.onchange = async (e: Event) => {
-            const target = e.target as HTMLInputElement;
-            const file = target.files?.[0];
-            if (!file) return;
-            
-            try {
-                const text = await file.text();
-                console.log('YAML file content:', text); // Debug log
-                
-                const parsedData = parseYAMLString(text);
-                console.log('Parsed data:', parsedData); // Debug log
-                
-                if (!parsedData || !parsedData.el || !Array.isArray(parsedData.el) || parsedData.el.length === 0) {
-                    alert('Invalid YAML file format. Could not find elements.');
-                    console.error('Parsed data is invalid:', parsedData);
-                    return;
-                }
-                
-                // Helper function to convert fill value to color
-                const fillToColor = (fill: number | undefined): string => {
-                    if (fill === undefined || fill === null) return '#000000';
-                    switch (fill) {
-                        case 0: return '#000000'; // black
-                        case 1: return '#ffffff'; // white
-                        case 2: return '#ffff00'; // yellow
-                        case 3: return '#ff0000'; // red
-                        default: return '#000000';
-                    }
-                };
-                
-                // Convert YAML elements to canvas items
-                const newItems: CanvasItem[] = [];
-                let nextId = 1;
-                
-                parsedData.el.forEach((element: any) => {
-                    try {
-                        console.log('Processing element:', element); // Debug log
-                        
-                        if (!element || !element.type) {
-                            console.warn('Skipping invalid element:', element);
-                            return;
-                        }
+        // Try to use File System Access API first (for Chrome/Edge)
+        if ('showOpenFilePicker' in window) {
+            (async () => {
+                try {
+                    const [fileHandle] = await (window as any).showOpenFilePicker({
+                        types: [{
+                            description: 'YAML Files',
+                            accept: { 'text/yaml': ['.yaml', '.yml'] }
+                        }],
+                        startIn: 'documents', // Start in documents folder
+                        multiple: false
+                    });
                     
-                        if (element.type === 'text' || element.type === 'var') {
-                            // Get font information with safe defaults
-                            const fontIndex = typeof element.font === 'number' ? element.font : 0;
-                            const fonts = Array.isArray(parsedData.fonts) ? parsedData.fonts : [];
-                            const font = fonts[fontIndex] || { size: 16, type: 'DejaVuSans' };
-                            
-                            // Map ESL font back to web font
-                            const webFont = getWebFontFromEslFont(font.type || 'DejaVuSans');
-                            
-                            // Safely extract formatting properties
-                            const formatting = (element._formatting && typeof element._formatting === 'object') ? element._formatting : {};
-                            
-                            const textItem: TextItem = {
-                                id: nextId++,
-                                type: 'text',
-                                x: typeof element.x === 'number' ? element.x : 0,
-                                y: typeof element.y === 'number' ? element.y : 0,
-                                text: element.type === 'var' ? `[${element.var || ''}]` : (element.text || ''),
-                                color: fillToColor(element.fill),
-                                fontSize: typeof font.size === 'number' ? font.size : 16,
-                                fontFamily: webFont,
-                                anchor: element.anchor || 'ls',
-                                bold: formatting.bold === true,
-                                italic: formatting.italic === true,
-                                underline: formatting.underline === true,
-                                zIndex: newItems.length
-                            };
-                            newItems.push(textItem);
-                            console.log('Created text item:', textItem); // Debug log
-                        } else if (element.type === 'rect') {
-                        // Convert rect from x1,y1,x2,y2 to x,y,width,height
-                        const x1 = element.x1 || 0;
-                        const y1 = element.y1 || 0;
-                        const x2 = element.x2 || 0;
-                        const y2 = element.y2 || 0;
+                    const file = await fileHandle.getFile();
+                    await processTemplateFile(file);
+                } catch (error) {
+                    // User cancelled or error occurred
+                    if ((error as any).name !== 'AbortError') {
+                        console.error('Error opening file:', error);
+                    }
+                }
+            })();
+        } else {
+            // Fallback to traditional file input for other browsers
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.yaml,.yml';
+            
+            input.onchange = async (e: Event) => {
+                const target = e.target as HTMLInputElement;
+                const file = target.files?.[0];
+                if (file) {
+                    await processTemplateFile(file);
+                }
+            };
+            
+            input.click();
+        }
+    }, []);
+
+    // Separate function to process the template file
+    const processTemplateFile = async (file: File) => {
+        try {
+            const text = await file.text();
+            console.log('YAML file content:', text); // Debug log
+            
+            const parsedData = parseYAMLString(text);
+            console.log('Parsed data:', parsedData); // Debug log
+            
+            if (!parsedData || !parsedData.el || !Array.isArray(parsedData.el) || parsedData.el.length === 0) {
+                alert('Invalid YAML file format. Could not find elements.');
+                console.error('Parsed data is invalid:', parsedData);
+                return;
+            }
+            
+            // Helper function to convert fill value to color
+            const fillToColor = (fill: number | undefined): string => {
+                if (fill === undefined || fill === null) return '#000000';
+                switch (fill) {
+                    case 0: return '#000000'; // black
+                    case 1: return '#ffffff'; // white
+                    case 2: return '#ffff00'; // yellow
+                    case 3: return '#ff0000'; // red
+                    default: return '#000000';
+                }
+            };
+            
+            // Convert YAML elements to canvas items
+            const newItems: CanvasItem[] = [];
+            let nextId = 1;
+            
+            parsedData.el.forEach((element: any) => {
+                try {
+                    console.log('Processing element:', element); // Debug log
+                    
+                    if (!element || !element.type) {
+                        console.warn('Skipping invalid element:', element);
+                        return;
+                    }
+                
+                    if (element.type === 'text' || element.type === 'var') {
+                        // Get font information with safe defaults
+                        const fontIndex = typeof element.font === 'number' ? element.font : 0;
+                        const fonts = Array.isArray(parsedData.fonts) ? parsedData.fonts : [];
+                        const font = fonts[fontIndex] || { size: 16, type: 'DejaVuSans' };
                         
-                        const rectItem: RectItem = {
+                        // Map ESL font back to web font
+                        const webFont = getWebFontFromEslFont(font.type || 'DejaVuSans');
+                        
+                        // Safely extract formatting properties
+                        const formatting = (element._formatting && typeof element._formatting === 'object') ? element._formatting : {};
+                        
+                        const textItem: TextItem = {
                             id: nextId++,
-                            type: 'rect',
-                            x: x1,
-                            y: y1,
-                            width: x2 - x1,
-                            height: y2 - y1,
-                            color: fillToColor(element.fill || 0),
+                            type: 'text',
+                            x: typeof element.x === 'number' ? element.x : 0,
+                            y: typeof element.y === 'number' ? element.y : 0,
+                            text: element.type === 'var' ? `[${element.var || ''}]` : (element.text || ''),
+                            color: fillToColor(element.fill),
+                            fontSize: typeof font.size === 'number' ? font.size : 16,
+                            fontFamily: webFont,
+                            anchor: element.anchor || 'ls',
+                            bold: formatting.bold === true,
+                            italic: formatting.italic === true,
+                            underline: formatting.underline === true,
                             zIndex: newItems.length
                         };
-                        newItems.push(rectItem);
-                        console.log('Created rect item:', rectItem); // Debug log
-                    }
-                    } catch (elementError) {
-                        console.error('Error processing element:', element, elementError);
-                        // Continue processing other elements
-                    }
-                });
-                
-                console.log('All items created:', newItems); // Debug log
-                
-                // Extract filename without extension
-                const filenameWithoutExt = file.name.replace(/\.(yaml|yml)$/i, '');
-                
-                // Update canvas dimensions from YAML if available
-                if (typeof parsedData.x_res === 'number' && parsedData.x_res > 0) {
-                    setCanvasWidth(parsedData.x_res);
+                        newItems.push(textItem);
+                        console.log('Created text item:', textItem); // Debug log
+                    } else if (element.type === 'rect') {
+                    // Convert rect from x1,y1,x2,y2 to x,y,width,height
+                    const x1 = element.x1 || 0;
+                    const y1 = element.y1 || 0;
+                    const x2 = element.x2 || 0;
+                    const y2 = element.y2 || 0;
+                    
+                    const rectItem: RectItem = {
+                        id: nextId++,
+                        type: 'rect',
+                        x: x1,
+                        y: y1,
+                        width: x2 - x1,
+                        height: y2 - y1,
+                        color: fillToColor(element.fill || 0),
+                        zIndex: newItems.length
+                    };
+                    newItems.push(rectItem);
+                    console.log('Created rect item:', rectItem); // Debug log
                 }
-                if (typeof parsedData.y_res === 'number' && parsedData.y_res > 0) {
-                    setCanvasHeight(parsedData.y_res);
+                } catch (elementError) {
+                    console.error('Error processing element:', element, elementError);
+                    // Continue processing other elements
                 }
-                
-                // Update ESL type from YAML if available
-                if (parsedData.type === 'bw' || parsedData.type === 'bwry') {
-                    setEslType(parsedData.type);
-                }
-                
-                // Update ESL axis from YAML if available
-                if (parsedData.axis === 0 || parsedData.axis === 1) {
-                    setEslAxis(parsedData.axis);
-                }
-                
-                // Update canvas with imported items and set filename
-                setCanvasItems(newItems);
-                setSelectedIds([]);
-                setTemplateFilename(filenameWithoutExt);
-                setLastSavedFilename(filenameWithoutExt); // Track as last saved since it was loaded
-                
-                alert(`Successfully imported ${newItems.length} element(s) from template.`);
-            } catch (error) {
-                console.error('Error importing template:', error);
-                alert(`Error importing template: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            });
+            
+            console.log('All items created:', newItems); // Debug log
+            
+            // Extract filename without extension
+            const filenameWithoutExt = file.name.replace(/\.(yaml|yml)$/i, '');
+            
+            // Update canvas dimensions from YAML if available
+            if (typeof parsedData.x_res === 'number' && parsedData.x_res > 0) {
+                setCanvasWidth(parsedData.x_res);
             }
-        };
-        
-        input.click();
-    }, []);
+            if (typeof parsedData.y_res === 'number' && parsedData.y_res > 0) {
+                setCanvasHeight(parsedData.y_res);
+            }
+            
+            // Update ESL type from YAML if available
+            if (parsedData.type === 'bw' || parsedData.type === 'bwry') {
+                setEslType(parsedData.type);
+            }
+            
+            // Update ESL axis from YAML if available
+            if (parsedData.axis === 0 || parsedData.axis === 1) {
+                setEslAxis(parsedData.axis);
+            }
+            
+            // Update canvas with imported items and set filename
+            setCanvasItems(newItems);
+            setSelectedIds([]);
+            setTemplateFilename(filenameWithoutExt);
+            setLastSavedFilename(filenameWithoutExt); // Track as last saved since it was loaded
+            
+            alert(`Successfully imported ${newItems.length} element(s) from template.`);
+        } catch (error) {
+            console.error('Error importing template:', error);
+            alert(`Error importing template: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    };
 
     // Helper function to parse YAML string to object
     const parseYAMLString = (yamlString: string): any => {
@@ -3354,8 +4197,25 @@ const TemplateEditor: React.FC = () => {
                 yaml += `    text: "${element.text}"\n`;
             }
             
-            // Handle coordinates based on element type
-            if (element.type === 'rect') {
+            // Handle element-specific fields
+            if (element.type === 'image') {
+                // Image elements use filename, size_x, size_y, x_pos, y_pos
+                if (element.filename) {
+                    yaml += `    filename: ${element.filename}\n`;
+                }
+                if (element.size_x !== undefined) {
+                    yaml += `    size_x: ${element.size_x}\n`;
+                }
+                if (element.size_y !== undefined) {
+                    yaml += `    size_y: ${element.size_y}\n`;
+                }
+                if (element.x_pos !== undefined) {
+                    yaml += `    x_pos: ${element.x_pos}\n`;
+                }
+                if (element.y_pos !== undefined) {
+                    yaml += `    y_pos: ${element.y_pos}\n`;
+                }
+            } else if (element.type === 'rect') {
                 // Rectangle uses x1, y1, x2, y2 format
                 yaml += `    x1: ${element.x1}\n`;
                 yaml += `    y1: ${element.y1}\n`;
@@ -3373,11 +4233,151 @@ const TemplateEditor: React.FC = () => {
             if (element.font !== undefined) {
                 yaml += `    font: ${element.font}\n`;
             }
+            if (element.scale !== undefined) {
+                yaml += `    scale: ${element.scale}\n`;
+            }
             yaml += '\n';
         });
         
         return yaml;
     };
+
+    // Import YAML from string content (for server-loaded templates)
+    const importYAMLFromContent = useCallback((content: string) => {
+        try {
+            console.log('YAML content:', content); // Debug log
+            
+            const parsedData = parseYAMLString(content);
+            console.log('Parsed data:', parsedData); // Debug log
+            
+            if (!parsedData || !parsedData.el || !Array.isArray(parsedData.el) || parsedData.el.length === 0) {
+                alert('Invalid YAML file format. Could not find elements.');
+                console.error('Parsed data is invalid:', parsedData);
+                return;
+            }
+            
+            // Helper function to convert fill value to color
+            const fillToColor = (fill: number | undefined): string => {
+                if (fill === undefined || fill === null) return '#000000';
+                switch (fill) {
+                    case 0: return '#000000'; // black
+                    case 1: return '#ffffff'; // white
+                    case 2: return '#ffff00'; // yellow
+                    case 3: return '#ff0000'; // red
+                    default: return '#000000';
+                }
+            };
+            
+            // Convert YAML elements to canvas items
+            const newItems: CanvasItem[] = [];
+            let nextId = 1;
+            
+            parsedData.el.forEach((element: any) => {
+                try {
+                    console.log('Processing element:', element); // Debug log
+                    
+                    if (!element || !element.type) {
+                        console.warn('Skipping invalid element:', element);
+                        return;
+                    }
+                
+                    if (element.type === 'text' || element.type === 'var') {
+                        // Get font information with safe defaults
+                        const fontIndex = typeof element.font === 'number' ? element.font : 0;
+                        const fontInfo = parsedData.fonts?.[fontIndex] || { type: 'LiberationSans-Regular', size: 12 };
+                        const webFont = getWebFontFromEslFont(fontInfo.type);
+                        
+                        const textItem: TextItem = {
+                            id: nextId++,
+                            type: 'text',
+                            x: Number(element.x) || 0,
+                            y: Number(element.y) || 0,
+                            color: fillToColor(element.fill),
+                            text: element.content || (element.type === 'var' ? `{${element.var || 'variable'}}` : 'Sample Text'),
+                            fontSize: fontInfo.size,
+                            fontFamily: webFont,
+                            anchor: element.anchor || 'lt'
+                        };
+                        
+                        newItems.push(textItem);
+                    } else if (element.type === 'rect') {
+                        // Rectangles use x1,y1,x2,y2 format (two corner points)
+                        const x1 = Number(element.x1) || Number(element.x) || 0;
+                        const y1 = Number(element.y1) || Number(element.y) || 0;
+                        const x2 = Number(element.x2) || (x1 + 50);
+                        const y2 = Number(element.y2) || (y1 + 30);
+                        
+                        const rectItem: RectItem = {
+                            id: nextId++,
+                            type: 'rect',
+                            x: Math.min(x1, x2),
+                            y: Math.min(y1, y2),
+                            color: fillToColor(element.fill),
+                            width: Math.abs(x2 - x1),
+                            height: Math.abs(y2 - y1)
+                        };
+                        
+                        newItems.push(rectItem);
+                    } else if (element.type === 'line') {
+                        // Handle line elements with x1,y1,x2,y2 format
+                        const lineItem: LineItem = {
+                            id: nextId++,
+                            type: 'line',
+                            x: Number(element.x1) || 0,
+                            y: Number(element.y1) || 0,
+                            color: fillToColor(element.fill),
+                            x2: Number(element.x2) || 50,
+                            y2: Number(element.y2) || 0,
+                            strokeWidth: 1
+                        };
+                        
+                        newItems.push(lineItem);
+                    } else if (element.type === 'circle') {
+                        const circleItem: CircleItem = {
+                            id: nextId++,
+                            type: 'circle',
+                            x: Number(element.x) || 0,
+                            y: Number(element.y) || 0,
+                            color: fillToColor(element.fill),
+                            radius: 15
+                        };
+                        
+                        newItems.push(circleItem);
+                    } else if (element.type === 'image') {
+                        // Handle image elements
+                        const imageItem: ImageItem = {
+                            id: nextId++,
+                            type: 'image',
+                            x: Number(element.x_pos) || Number(element.x) || 0,
+                            y: Number(element.y_pos) || Number(element.y) || 0,
+                            color: fillToColor(element.fill),
+                            width: Number(element.size_x) || Number(element.width) || 100,
+                            height: Number(element.size_y) || Number(element.height) || 100,
+                            filename: element.filename || 'unknown.png'
+                        };
+                        
+                        newItems.push(imageItem);
+                    }
+                } catch (elementError) {
+                    console.error('Error processing element:', elementError, element);
+                }
+            });
+            
+            // Update canvas with imported items
+            setCanvasItems(newItems);
+            setSelectedIds([]);
+            
+            // Update ESL configuration if available
+            if (parsedData.x_res !== undefined) setCanvasWidth(parsedData.x_res);
+            if (parsedData.y_res !== undefined) setCanvasHeight(parsedData.y_res);
+            
+            console.log('Successfully imported', newItems.length, 'items from YAML content');
+            
+        } catch (error) {
+            console.error('Error importing YAML content:', error);
+            alert('Failed to import template. Please check the file format.');
+        }
+    }, []);
 
     // Menu handlers
     const handleMenuClick = (menuName: string) => {
@@ -3389,10 +4389,11 @@ const TemplateEditor: React.FC = () => {
         
         switch (action) {
             case 'load':
-                importTemplate();
+                openFileBrowser();
                 break;
             case 'save':
-                exportToYAML();
+                // Show options: save to server or export locally
+                openSaveDialog();
                 break;
             case 'quit':
                 if (confirm('Are you sure you want to quit? Any unsaved changes will be lost.')) {
@@ -3457,13 +4458,33 @@ const TemplateEditor: React.FC = () => {
         if (!isDraggingZoomControls) return;
 
         const handleMouseMove = (e: MouseEvent) => {
-            const deltaX = zoomDragStart.x - e.clientX; // Inverted because right: position
+            const deltaX = e.clientX - zoomDragStart.x; // Normal direction for left: position
             const deltaY = zoomDragStart.y - e.clientY; // Inverted because bottom: position
             
-            setZoomControlsPosition(prev => ({
-                x: Math.max(10, prev.x + deltaX),
-                y: Math.max(10, prev.y + deltaY)
-            }));
+            setZoomControlsPosition(prev => {
+                // Calculate new position
+                const newX = prev.x + deltaX;
+                const newY = prev.y + deltaY;
+                
+                // Get viewport dimensions
+                const viewportWidth = window.innerWidth;
+                const viewportHeight = window.innerHeight;
+                
+                // Zoom control panel approximate dimensions
+                const controlWidth = 120;
+                const controlHeight = 200;
+                
+                // Constrain to viewport bounds
+                // For left position: min is 10, max is (viewportWidth - controlWidth - 10)
+                // For bottom position: min is 10, max is (viewportHeight - controlHeight - 10)
+                const constrainedX = Math.max(10, Math.min(viewportWidth - controlWidth - 10, newX));
+                const constrainedY = Math.max(10, Math.min(viewportHeight - controlHeight - 10, newY));
+                
+                return {
+                    x: constrainedX,
+                    y: constrainedY
+                };
+            });
             
             setZoomDragStart({ x: e.clientX, y: e.clientY });
         };
@@ -3791,6 +4812,774 @@ const TemplateEditor: React.FC = () => {
                 </div>
             )}
 
+            {/* File Browser Dialog */}
+            {showFileBrowserDialog && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 2000
+                }} onClick={() => setShowFileBrowserDialog(false)}>
+                    <div style={{
+                        backgroundColor: 'white',
+                        padding: '20px',
+                        borderRadius: '8px',
+                        boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+                        width: '600px',
+                        maxHeight: '70vh',
+                        display: 'flex',
+                        flexDirection: 'column'
+                    }} onClick={(e) => e.stopPropagation()}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                            <h2 style={{ margin: '0', fontSize: '18px', color: '#333' }}>Select Template</h2>
+                            <button 
+                                onClick={() => setShowFileBrowserDialog(false)}
+                                style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    fontSize: '20px',
+                                    cursor: 'pointer',
+                                    color: '#999'
+                                }}
+                            >
+                                ×
+                            </button>
+                        </div>
+                        
+                        <div style={{ fontSize: '14px', color: '#666', marginBottom: '10px' }}>
+                            Location: /opt/esl/tag_image_gen/tag_image_templates/label_templates/bwry/
+                        </div>
+
+                        {browserLoading ? (
+                            <div style={{ padding: '40px', textAlign: 'center', color: '#666' }}>
+                                Loading folders...
+                            </div>
+                        ) : (
+                            <div style={{ flex: 1, overflow: 'auto' }}>
+                                {!selectedFolder ? (
+                                    /* Folder selection view */
+                                    <div>
+                                        <h3 style={{ margin: '0 0 10px 0', fontSize: '16px', color: '#333' }}>Select Folder:</h3>
+                                        <div style={{ 
+                                            border: '1px solid #ddd', 
+                                            borderRadius: '4px', 
+                                            maxHeight: '300px', 
+                                            overflow: 'auto',
+                                            backgroundColor: '#f9f9f9'
+                                        }}>
+                                            {availableFolders.length > 0 ? (
+                                                availableFolders.map((folder, index) => (
+                                                    <div 
+                                                        key={index}
+                                                        onClick={() => {
+                                                            setSelectedFolder(folder);
+                                                            fetchFilesInFolder(folder);
+                                                        }}
+                                                        style={{
+                                                            padding: '12px',
+                                                            borderBottom: index < availableFolders.length - 1 ? '1px solid #eee' : 'none',
+                                                            cursor: 'pointer',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+
+                                                        }}
+                                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                                                    >
+                                                        <span style={{ marginRight: '8px' }}>📁</span>
+                                                        {folder}
+                                                    </div>
+                                                ))
+                                            ) : (
+                                                <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+                                                    No template folders found in:<br />
+                                                    /opt/esl/tag_image_gen/tag_image_templates/label_templates/bwry/<br />
+                                                    <small style={{ fontSize: '12px', marginTop: '10px', display: 'block' }}>
+                                                        Create some template folders to get started
+                                                    </small>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    /* File selection view */
+                                    <div>
+                                        <div style={{ display: 'flex', alignItems: 'center', marginBottom: '10px' }}>
+                                            <button 
+                                                onClick={() => {
+                                                    setSelectedFolder('');
+                                                    setAvailableFiles([]);
+                                                }}
+                                                style={{
+                                                    background: 'none',
+                                                    border: 'none',
+                                                    cursor: 'pointer',
+                                                    color: '#007bff',
+                                                    fontSize: '14px',
+                                                    marginRight: '10px'
+                                                }}
+                                            >
+                                                ← Back
+                                            </button>
+                                            <h3 style={{ margin: '0', fontSize: '16px', color: '#333' }}>
+                                                Files in: {selectedFolder}
+                                            </h3>
+                                        </div>
+                                        <div style={{ 
+                                            border: '1px solid #ddd', 
+                                            borderRadius: '4px', 
+                                            maxHeight: '300px', 
+                                            overflow: 'auto',
+                                            backgroundColor: '#f9f9f9'
+                                        }}>
+                                            {availableFiles.length > 0 ? (
+                                                availableFiles.map((file, index) => (
+                                                    <div 
+                                                        key={index}
+                                                        onClick={async () => {
+                                                            try {
+                                                                const response = await fetch('/api/load-template', {
+                                                                    method: 'POST',
+                                                                    headers: {
+                                                                        'Content-Type': 'application/json',
+                                                                    },
+                                                                    body: JSON.stringify({
+                                                                        folderPath: `/opt/esl/tag_image_gen/tag_image_templates/label_templates/bwry/${selectedFolder}`,
+                                                                        fileName: file
+                                                                    }),
+                                                                });
+                                                                
+                                                                if (response.ok) {
+                                                                    const data = await response.json();
+                                                                    importYAMLFromContent(data.content);
+                                                                    setShowFileBrowserDialog(false);
+                                                                } else {
+                                                                    const error = await response.json();
+                                                                    alert(`Error loading template: ${error.error}`);
+                                                                }
+                                                            } catch (error) {
+                                                                console.error('Error loading template:', error);
+                                                                alert('Failed to load template');
+                                                            }
+                                                        }}
+                                                        style={{
+                                                            padding: '12px',
+                                                            borderBottom: index < availableFiles.length - 1 ? '1px solid #eee' : 'none',
+                                                            cursor: 'pointer',
+                                                            display: 'flex',
+                                                            alignItems: 'center'
+                                                        }}
+                                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
+                                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                                                    >
+                                                        <span style={{ marginRight: '8px' }}>📄</span>
+                                                        {file}
+                                                    </div>
+                                                ))
+                                            ) : (
+                                                <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+                                                    No YAML template files found
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <button 
+                                onClick={() => {
+                                    setShowFileBrowserDialog(false);
+                                    importTemplate(); // Use existing local file import function
+                                }}
+                                style={{
+                                    padding: '8px 16px',
+                                    backgroundColor: '#28a745',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '14px',
+                                    fontWeight: '500'
+                                }}
+                            >
+                                📁 Load Local
+                            </button>
+                            <button 
+                                onClick={() => setShowFileBrowserDialog(false)}
+                                style={{
+                                    padding: '8px 16px',
+                                    backgroundColor: '#6c757d',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '14px'
+                                }}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Save Dialog */}
+            {showSaveDialog && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 2000
+                }} onClick={() => setShowSaveDialog(false)}>
+                    <div style={{
+                        backgroundColor: 'white',
+                        padding: '20px',
+                        borderRadius: '8px',
+                        boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+                        width: '500px',
+                        display: 'flex',
+                        flexDirection: 'column'
+                    }} onClick={(e) => e.stopPropagation()}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                            <h2 style={{ margin: '0', fontSize: '18px', color: '#333' }}>Save Template</h2>
+                            <button 
+                                onClick={() => setShowSaveDialog(false)}
+                                style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    fontSize: '24px',
+                                    cursor: 'pointer',
+                                    color: '#999',
+                                    padding: '0',
+                                    width: '30px',
+                                    height: '30px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                }}
+                            >
+                                ×
+                            </button>
+                        </div>
+
+                        <div style={{ marginBottom: '15px' }}>
+                            <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px', fontWeight: 'bold', color: '#555' }}>
+                                Filename:
+                            </label>
+                            <input
+                                type="text"
+                                value={saveFilename}
+                                onChange={(e) => setSaveFilename(e.target.value)}
+                                placeholder="Enter filename (without extension)"
+                                style={{
+                                    width: '100%',
+                                    padding: '8px',
+                                    fontSize: '14px',
+                                    border: '1px solid #ddd',
+                                    borderRadius: '4px',
+                                    boxSizing: 'border-box'
+                                }}
+                            />
+                            <small style={{ color: '#666', fontSize: '12px' }}>.yml will be added automatically</small>
+                        </div>
+
+                        <div style={{ marginBottom: '15px' }}>
+                            <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px', fontWeight: 'bold', color: '#555' }}>
+                                Select Folder:
+                            </label>
+                            <select
+                                value={saveSelectedFolder}
+                                onChange={(e) => setSaveSelectedFolder(e.target.value)}
+                                style={{
+                                    width: '100%',
+                                    padding: '8px',
+                                    fontSize: '14px',
+                                    border: '1px solid #ddd',
+                                    borderRadius: '4px',
+                                    boxSizing: 'border-box'
+                                }}
+                            >
+                                <option value="">-- Select a folder --</option>
+                                {saveFolders.map(folder => (
+                                    <option key={folder} value={folder}>{folder}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                            <button
+                                onClick={saveTemplateToServer}
+                                disabled={!saveSelectedFolder || !saveFilename || saveLoading}
+                                style={{
+                                    padding: '8px 16px',
+                                    backgroundColor: (!saveSelectedFolder || !saveFilename || saveLoading) ? '#ccc' : '#007bff',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: (!saveSelectedFolder || !saveFilename || saveLoading) ? 'not-allowed' : 'pointer',
+                                    fontSize: '14px'
+                                }}
+                            >
+                                {saveLoading ? 'Saving...' : 'Save to Server'}
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setShowSaveDialog(false);
+                                    exportToYAML();
+                                }}
+                                style={{
+                                    padding: '8px 16px',
+                                    backgroundColor: '#28a745',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '14px'
+                                }}
+                            >
+                                Export Local
+                            </button>
+                            <button 
+                                onClick={() => setShowSaveDialog(false)}
+                                style={{
+                                    padding: '8px 16px',
+                                    backgroundColor: '#6c757d',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '14px'
+                                }}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Image Browser Dialog */}
+            {showImageBrowserDialog && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 2000
+                }} onClick={() => setShowImageBrowserDialog(false)}>
+                    <div style={{
+                        backgroundColor: 'white',
+                        padding: '20px',
+                        borderRadius: '8px',
+                        boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+                        width: '500px',
+                        maxHeight: '70vh',
+                        display: 'flex',
+                        flexDirection: 'column'
+                    }} onClick={(e) => e.stopPropagation()}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                            <h2 style={{ margin: '0', fontSize: '18px', color: '#333' }}>Select Image</h2>
+                            <button 
+                                onClick={() => setShowImageBrowserDialog(false)}
+                                style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    fontSize: '24px',
+                                    cursor: 'pointer',
+                                    color: '#999',
+                                    padding: '0',
+                                    width: '30px',
+                                    height: '30px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                }}
+                            >
+                                ×
+                            </button>
+                        </div>
+
+                        <div style={{ fontSize: '14px', color: '#666', marginBottom: '15px' }}>
+                            <strong>Location:</strong> /opt/esl/tag_image_gen/images
+                        </div>
+
+                        {imageBrowserLoading ? (
+                            <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+                                Loading images...
+                            </div>
+                        ) : availableImages.length === 0 ? (
+                            <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+                                No .bmp or .png images found
+                            </div>
+                        ) : (
+                            <div style={{
+                                flex: 1,
+                                overflowY: 'auto',
+                                border: '1px solid #ddd',
+                                borderRadius: '4px',
+                                padding: '10px',
+                                marginBottom: '15px'
+                            }}>
+                                {availableImages.map(image => (
+                                    <div
+                                        key={image}
+                                        onClick={() => setSelectedImage(image)}
+                                        style={{
+                                            padding: '10px',
+                                            cursor: 'pointer',
+                                            borderRadius: '4px',
+                                            marginBottom: '5px',
+                                            backgroundColor: selectedImage === image ? '#e3f2fd' : 'transparent',
+                                            border: selectedImage === image ? '2px solid #2196f3' : '2px solid transparent',
+                                            transition: 'all 0.2s'
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            if (selectedImage !== image) {
+                                                e.currentTarget.style.backgroundColor = '#f5f5f5';
+                                            }
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            if (selectedImage !== image) {
+                                                e.currentTarget.style.backgroundColor = 'transparent';
+                                            }
+                                        }}
+                                    >
+                                        <div style={{ display: 'flex', alignItems: 'center' }}>
+                                            <span style={{ marginRight: '10px', fontSize: '18px' }}>
+                                                {image.endsWith('.bmp') ? '🖼️' : '🖼️'}
+                                            </span>
+                                            <span style={{ fontSize: '14px', color: '#333' }}>{image}</span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                            <button
+                                onClick={addImageFromBrowser}
+                                disabled={!selectedImage || imageBrowserLoading}
+                                style={{
+                                    padding: '8px 16px',
+                                    backgroundColor: (!selectedImage || imageBrowserLoading) ? '#ccc' : '#007bff',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: (!selectedImage || imageBrowserLoading) ? 'not-allowed' : 'pointer',
+                                    fontSize: '14px'
+                                }}
+                            >
+                                Add Image
+                            </button>
+                            <button 
+                                onClick={() => setShowImageBrowserDialog(false)}
+                                style={{
+                                    padding: '8px 16px',
+                                    backgroundColor: '#6c757d',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '14px'
+                                }}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Preview Dialog */}
+            {showPreviewDialog && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: 'rgba(0,0,0,0.8)',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    justifyContent: 'center',
+                    paddingTop: '5vh',
+                    zIndex: 3000
+                }} onClick={() => {
+                    setShowPreviewDialog(false);
+                    setPreviewImageUrl('');
+                    setPreviewZoom(1);
+                }}>
+                    <div style={{
+                        backgroundColor: 'white',
+                        padding: '20px',
+                        borderRadius: '8px',
+                        boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+                        width: `${previewDialogSize.width}px`,
+                        height: `${previewDialogSize.height}px`,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        position: 'relative',
+                        overflow: 'hidden'
+                    }} onClick={(e) => e.stopPropagation()}>
+                        {/* Resize handle */}
+                        <div
+                            onMouseDown={(e) => {
+                                e.stopPropagation();
+                                setIsResizingPreview(true);
+                                setResizeStartPos({ x: e.clientX, y: e.clientY });
+                                setResizeStartSize({ width: previewDialogSize.width, height: previewDialogSize.height });
+                            }}
+                            style={{
+                                position: 'absolute',
+                                bottom: 0,
+                                right: 0,
+                                width: '20px',
+                                height: '20px',
+                                cursor: 'nwse-resize',
+                                zIndex: 10,
+                                background: 'linear-gradient(135deg, transparent 0%, transparent 50%, #999 50%, #999 100%)',
+                                borderBottomRightRadius: '8px'
+                            }}
+                        />
+                        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', marginBottom: '15px', position: 'relative' }}>
+                            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                                <button
+                                    onClick={() => setPreviewZoom(Math.max(getMinimumZoom(), previewZoom - 0.25))}
+                                    style={{
+                                        padding: '4px 12px',
+                                        backgroundColor: '#6c757d',
+                                        color: 'white',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        cursor: 'pointer',
+                                        fontSize: '18px',
+                                        fontWeight: 'bold'
+                                    }}
+                                    title="Zoom Out"
+                                >
+                                    −
+                                </button>
+                                <span style={{ fontSize: '14px', color: '#666', minWidth: '60px', textAlign: 'center' }}>
+                                    {Math.round(previewZoom * 100)}%
+                                </span>
+                                <button
+                                    onClick={() => setPreviewZoom(Math.min(4, previewZoom + 0.25))}
+                                    style={{
+                                        padding: '4px 12px',
+                                        backgroundColor: '#6c757d',
+                                        color: 'white',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        cursor: 'pointer',
+                                        fontSize: '18px',
+                                        fontWeight: 'bold'
+                                    }}
+                                    title="Zoom In"
+                                >
+                                    +
+                                </button>
+                                <button
+                                    onClick={() => setPreviewZoom(1)}
+                                    style={{
+                                        padding: '4px 12px',
+                                        backgroundColor: '#6c757d',
+                                        color: 'white',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        cursor: 'pointer',
+                                        fontSize: '12px'
+                                    }}
+                                    title="Reset Zoom"
+                                >
+                                    Reset
+                                </button>
+                            </div>
+                            <button 
+                                onClick={() => {
+                                    setShowPreviewDialog(false);
+                                    setPreviewImageUrl('');
+                                    setPreviewZoom(1);
+                                }}
+                                style={{
+                                    position: 'absolute',
+                                    right: '0',
+                                    background: 'none',
+                                    border: 'none',
+                                    fontSize: '24px',
+                                    cursor: 'pointer',
+                                    color: '#999',
+                                    padding: '0',
+                                    width: '30px',
+                                    height: '30px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                }}
+                            >
+                                ×
+                            </button>
+                        </div>
+
+                        {/* Case Color Selector */}
+                        <div style={{ 
+                            display: 'flex', 
+                            justifyContent: 'center', 
+                            alignItems: 'center', 
+                            gap: '10px',
+                            marginBottom: '15px',
+                            fontSize: '14px'
+                        }}>
+                            <span style={{ color: '#666', fontWeight: '500' }}>Case Colour:</span>
+                            <button
+                                onClick={() => setPreviewCaseColor('white')}
+                                style={{
+                                    padding: '6px 16px',
+                                    backgroundColor: previewCaseColor === 'white' ? '#007bff' : '#f0f0f0',
+                                    color: previewCaseColor === 'white' ? 'white' : '#333',
+                                    border: '1px solid ' + (previewCaseColor === 'white' ? '#007bff' : '#ccc'),
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '13px',
+                                    fontWeight: '500',
+                                    transition: 'all 0.2s ease'
+                                }}
+                            >
+                                White
+                            </button>
+                            <button
+                                onClick={() => setPreviewCaseColor('black')}
+                                style={{
+                                    padding: '6px 16px',
+                                    backgroundColor: previewCaseColor === 'black' ? '#007bff' : '#f0f0f0',
+                                    color: previewCaseColor === 'black' ? 'white' : '#333',
+                                    border: '1px solid ' + (previewCaseColor === 'black' ? '#007bff' : '#ccc'),
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '13px',
+                                    fontWeight: '500',
+                                    transition: 'all 0.2s ease'
+                                }}
+                            >
+                                Black
+                            </button>
+                        </div>
+
+                        <div 
+                            style={{
+                                overflow: 'auto',
+                                width: '100%',
+                                flex: 1,
+                                border: '1px solid #ddd',
+                                backgroundColor: '#f8f9fa'
+                            }}
+                            onWheel={(e) => {
+                                e.preventDefault();
+                                const delta = e.deltaY > 0 ? -0.1 : 0.1;
+                                setPreviewZoom(Math.max(getMinimumZoom(), Math.min(4, previewZoom + delta)));
+                            }}
+                        >
+                            <div style={{
+                                display: 'table',
+                                minWidth: '100%',
+                                minHeight: '100%'
+                            }}>
+                                <div style={{
+                                    display: 'table-cell',
+                                    textAlign: 'center',
+                                    verticalAlign: 'middle',
+                                    padding: '20px'
+                                }}>
+                                    {/* ESL Housing - rounded outer border */}
+                                    <div style={{
+                                        padding: `${20 * previewZoom}px`,
+                                        backgroundColor: previewCaseColor === 'white' ? '#ffffff' : '#1a1a1a',
+                                        borderRadius: `${12 * previewZoom}px`,
+                                        border: `${4 * previewZoom}px solid #000`,
+                                        boxShadow: previewCaseColor === 'white' ? '0 2px 8px rgba(0,0,0,0.3)' : '0 2px 8px rgba(0,0,0,0.6)',
+                                        display: 'inline-block'
+                                    }}>
+                                        {/* Image with bold rectangular border */}
+                                        <img
+                                            src={previewImageUrl}
+                                            alt="Template Preview"
+                                            style={{
+                                                width: `${canvasWidth * previewZoom}px`,
+                                                height: `${canvasHeight * previewZoom}px`,
+                                                imageRendering: 'pixelated',
+                                                border: `${3 * previewZoom}px solid #000`,
+                                                display: 'block',
+                                                borderRadius: '0'
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style={{ marginTop: '15px', display: 'flex', justifyContent: 'center', gap: '10px' }}>
+                            <button
+                                onClick={() => {
+                                    // Download the preview image
+                                    const link = document.createElement('a');
+                                    link.href = previewImageUrl;
+                                    link.download = 'esl-template.jpg';
+                                    document.body.appendChild(link);
+                                    link.click();
+                                    document.body.removeChild(link);
+                                }}
+                                style={{
+                                    padding: '8px 16px',
+                                    backgroundColor: '#28a745',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '14px'
+                                }}
+                            >
+                                Download
+                            </button>
+                            <button 
+                                onClick={() => {
+                                    setShowPreviewDialog(false);
+                                    setPreviewImageUrl('');
+                                }}
+                                style={{
+                                    padding: '8px 16px',
+                                    backgroundColor: '#6c757d',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '14px'
+                                }}
+                            >
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* ESL Config Dialog */}
             {showEslConfigDialog && (
                 <div style={{
@@ -4028,13 +5817,18 @@ const TemplateEditor: React.FC = () => {
                                             const lines = text.split('\n');
                                             const lineHeight = item.fontSize * 1.2;
                                             
+                                            // Calculate anchor-based positioning for both edit and display modes
+                                            const estimatedTextWidth = estimateTextWidth(text, item.fontSize, (item as TextItem).fontFamily);
+                                            const estimatedTextHeight = lines.length * lineHeight;
+                                            const textAnchoredPosition = calculateAnchoredPosition(item as TextItem, estimatedTextWidth, estimatedTextHeight);
+                                            
                                             // If this text is being edited, show input instead
                                             if (editingTextId === item.id) {
                                                 return (
                                                     <foreignObject
                                                         key={item.id}
-                                                        x={item.x - 1}
-                                                        y={item.y - 2}
+                                                        x={textAnchoredPosition.x}
+                                                        y={textAnchoredPosition.y}
                                                         width={Math.max(200, text.length * item.fontSize * 0.6)}
                                                         height={Math.max(item.fontSize * 1.5, lines.length * lineHeight + 10)}
                                                     >
@@ -4075,8 +5869,15 @@ const TemplateEditor: React.FC = () => {
                                             return (
                                                 <text
                                                     key={item.id}
-                                                    x={item.x - 1}
-                                                    y={item.y - 2}
+                                                    ref={(el) => {
+                                                        if (el) {
+                                                            textElementRefs.current.set(item.id, el);
+                                                        } else {
+                                                            textElementRefs.current.delete(item.id);
+                                                        }
+                                                    }}
+                                                    x={textAnchoredPosition.x}
+                                                    y={textAnchoredPosition.y}
                                                     fill={item.color}
                                                     fontSize={item.fontSize}
                                                     dominantBaseline="hanging"
@@ -4096,7 +5897,7 @@ const TemplateEditor: React.FC = () => {
                                                     {lines.map((line, index) => (
                                                         <tspan
                                                             key={index}
-                                                            x={item.x - 1}
+                                                            x={textAnchoredPosition.x}
                                                             dy={index === 0 ? 0 : lineHeight}
                                                         >
                                                             {line}
@@ -4216,6 +6017,52 @@ const TemplateEditor: React.FC = () => {
                                                 </g>
                                             );
                                         }
+                                        if (item.type === "image") {
+                                            return (
+                                                <g key={item.id}>
+                                                    {item.filename ? (
+                                                        <image
+                                                            x={item.x}
+                                                            y={item.y}
+                                                            width={item.width}
+                                                            height={item.height}
+                                                            href={`/api/get-image?filename=${encodeURIComponent(item.filename)}`}
+                                                            preserveAspectRatio="none"
+                                                            stroke={selectedIds.includes(item.id) ? "#007bff" : "none"}
+                                                            strokeWidth={selectedIds.includes(item.id) ? 2 : 0}
+                                                            style={{ cursor: "grab" }}
+                                                            onMouseDown={(e) => handleMouseDown(e, item.id)}
+                                                        />
+                                                    ) : (
+                                                        <rect
+                                                            x={item.x}
+                                                            y={item.y}
+                                                            width={item.width}
+                                                            height={item.height}
+                                                            fill="#f0f0f0"
+                                                            stroke="#ccc"
+                                                            strokeWidth={1}
+                                                            strokeDasharray="5,5"
+                                                            style={{ cursor: "grab" }}
+                                                            onMouseDown={(e) => handleMouseDown(e, item.id)}
+                                                        />
+                                                    )}
+                                                    {!item.filename && (
+                                                        <text
+                                                            x={item.x + item.width / 2}
+                                                            y={item.y + item.height / 2}
+                                                            fill="#999"
+                                                            fontSize="12"
+                                                            textAnchor="middle"
+                                                            dominantBaseline="central"
+                                                            style={{ pointerEvents: "none" }}
+                                                        >
+                                                            No Image
+                                                        </text>
+                                                    )}
+                                                </g>
+                                            );
+                                        }
                                         return null;
                                     })}
                                     
@@ -4230,6 +6077,8 @@ const TemplateEditor: React.FC = () => {
                                                 return renderResizeHandles(selectedItem as TextItem);
                                             } else if (selectedItem?.type === 'line') {
                                                 return renderResizeHandles(selectedItem as LineItem);
+                                            } else if (selectedItem?.type === 'image') {
+                                                return renderResizeHandles(selectedItem as ImageItem);
                                             }
                                             return null;
                                         }
@@ -4272,13 +6121,13 @@ const TemplateEditor: React.FC = () => {
                             </div>
                         </div>
                         
-                        {/* Floating Zoom Controls - Bottom Right of dark area */}
+                        {/* Floating Zoom Controls - Bottom Right of canvas area */}
                         <div 
                             onMouseDown={handleZoomControlMouseDown}
                             style={{
-                                position: 'absolute',
+                                position: 'fixed',
                                 bottom: `${zoomControlsPosition.y}px`,
-                                right: `${zoomControlsPosition.x}px`,
+                                left: `${zoomControlsPosition.x}px`,
                                 display: 'flex',
                                 flexDirection: 'column',
                                 gap: '0',
@@ -4295,13 +6144,24 @@ const TemplateEditor: React.FC = () => {
                                 <div style={{
                                     padding: '8px',
                                     textAlign: 'center',
-                                    borderBottom: '1px solid rgba(255, 255, 255, 0.2)',
-                                    fontSize: '10px',
-                                    color: 'rgba(255, 255, 255, 0.6)',
-                                    fontWeight: 'bold',
-                                    letterSpacing: '1px'
+                                    borderBottom: '1px solid rgba(255, 255, 255, 0.2)'
                                 }}>
-                                    ZOOM
+                                    <div style={{
+                                        fontSize: '10px',
+                                        color: 'rgba(255, 255, 255, 0.6)',
+                                        fontWeight: 'bold',
+                                        letterSpacing: '1px'
+                                    }}>
+                                        ZOOM
+                                    </div>
+                                    <div style={{
+                                        fontSize: '12px',
+                                        color: 'rgba(255, 255, 255, 0.9)',
+                                        fontWeight: 'normal',
+                                        marginTop: '4px'
+                                    }}>
+                                        {Math.round(zoomLevel * 100)}%
+                                    </div>
                                 </div>
                                 
                                 {/* Buttons container */}
@@ -4431,7 +6291,7 @@ const TemplateEditor: React.FC = () => {
     );
 };
 
-export default TemplateEditor;
+export default IntegratedTemplateEditor;
 
 
 
